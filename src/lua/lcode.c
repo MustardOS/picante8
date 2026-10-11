@@ -11,6 +11,7 @@
 
 
 #include <math.h>
+#include <stdint.h>
 #include <stdlib.h>
 
 #include "lua.h"
@@ -980,14 +981,20 @@ static int constfolding (FuncState *fs, int op, expdesc *e1,
   if (!tonumeral(e1, &v1) || !tonumeral(e2, &v2) || !validop(op, &v1, &v2))
     return 0;  /* non-numeric operands or not safe to fold */
   luaO_arith(fs->ls->L, op, &v1, &v2, &res);  /* does operation */
+  /* folded constants wrap like PICO-8 literals, so -32768 stays -32768 */
   if (ttisinteger(&res)) {
+    lua_Integer v = ivalue(&res);
+    if (v < -32768 || v > 32767)
+      v = (lua_Integer)((int16_t)(uint16_t)(v & 0xffff));
     e1->k = VKINT;
-    e1->u.ival = ivalue(&res);
+    e1->u.ival = v;
   }
   else {  /* folds neither NaN nor 0.0 (to avoid problems with -0.0) */
     lua_Number n = fltvalue(&res);
     if (luai_numisnan(n) || n == 0)
       return 0;
+    if (n >= 32768.0 || n < -32768.0)
+      n -= 65536.0 * l_mathop(floor)((n + 32768.0) / 65536.0);
     e1->k = VKFLT;
     e1->u.nval = n;
   }

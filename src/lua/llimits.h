@@ -266,7 +266,9 @@ typedef unsigned long Instruction;
 
 /* float division */
 #if !defined(luai_numdiv)
-#define luai_numdiv(L,a,b)      ((a)/(b))
+/* PICO-8 gives the largest number of the matching sign for a division by zero */
+#define luai_numdiv(L,a,b)      ((b) != 0 ? (a)/(b) : \
+                                 ((a) < 0 ? -32767.9999847412109375 : 32767.9999847412109375))
 #endif
 
 /*

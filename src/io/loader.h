@@ -19,11 +19,11 @@ namespace retro8
       uint8_t valueForUint8(const char* c);
 
       template<typename T> std::vector<std::string> loadLines(T& stream);
-      void load(const std::vector<std::string>& lines, Machine& dest);
+      bool load(const std::vector<std::string>& lines, Machine& dest);
 
     public:
 
-      void loadRaw(const std::string& data, Machine& dest);
+      bool loadRaw(const std::string& data, Machine& dest);
       void loadFile(const std::string& path, Machine& dest);
 
       static bool isPngCartridge(const std::string& path);

@@ -1,20 +1,14 @@
 local string, math = ...
 
 function all(t)
-  if t ~= nil then
-    local nt = {}
-    local ni = 1
-    for _,v in pairs(t) do
-      nt[ni] = v
-      ni = ni + 1
-    end
-    for k,v in pairs(nt) do
-    end
-
-    local i = 0
-    return function() i = i + 1; return nt[i] end
+  if t == nil then return function() end end
+  local i, last = 1, nil
+  return function()
+    if t[i] == last then i = i + 1 end
+    while t[i] == nil and i <= #t do i = i + 1 end
+    last = t[i]
+    return last
   end
-  return function() end
 end
 
 function add(t, v, i)
@@ -157,8 +151,8 @@ function ord(s, i, n)
   if type(s) ~= "string" then
     return nil
   end
-  i = i or 1
-  n = n or 1
+  i = math.floor(tonumber(i) or 1)
+  n = math.floor(tonumber(n) or 1)
   return string.byte(s, i, i + n - 1)
 end
 
@@ -214,12 +208,71 @@ function oval(x0, y0, x1, y1, c)
   end
 end
 
--- button glyphs are variables in PICO-8, in both P8SCII and UTF-8 form
+-- button and fill pattern glyphs are variables in PICO-8, in both P8SCII and UTF-8 form
 for k, v in pairs({
   ["\x8b"] = 0, ["\x91"] = 1, ["\x94"] = 2, ["\x83"] = 3, ["\x8e"] = 4, ["\x97"] = 5,
   ["\xe2\xac\x85"] = 0, ["\xe2\x9e\xa1"] = 1, ["\xe2\xac\x86"] = 2, ["\xe2\xac\x87"] = 3,
   ["\xf0\x9f\x85\xbe"] = 4, ["\xe2\x9d\x8e"] = 5,
+  ["\x80"] = 0x0000, ["\xe2\x96\x88"] = 0x0000,
+  ["\x81"] = 0x5a5a.8, ["\xe2\x96\x92"] = 0x5a5a.8,
+  ["\x82"] = 0x511f.8, ["\xf0\x9f\x90\xb1"] = 0x511f.8,
+  ["\x84"] = 0x7d7d.8, ["\xe2\x96\x91"] = 0x7d7d.8,
+  ["\x85"] = 0xb81d.8, ["\xe2\x9c\xbd"] = 0xb81d.8,
+  ["\x86"] = 0xf99f.8, ["\xe2\x97\x8f"] = 0xf99f.8,
+  ["\x87"] = 0x51bf.8, ["\xe2\x99\xa5"] = 0x51bf.8,
+  ["\x88"] = 0xb5bf.8, ["\xe2\x98\x89"] = 0xb5bf.8,
+  ["\x89"] = 0x999f.8, ["\xec\x9b\x83"] = 0x999f.8,
+  ["\x8a"] = 0xb11f.8, ["\xe2\x8c\x82"] = 0xb11f.8,
+  ["\x8c"] = 0xa0e0.8, ["\xf0\x9f\x98\x90"] = 0xa0e0.8,
+  ["\x8d"] = 0x9b3f.8, ["\xe2\x99\xaa"] = 0x9b3f.8,
+  ["\x8f"] = 0xb1bf.8, ["\xe2\x97\x86"] = 0xb1bf.8,
+  ["\x90"] = 0xf5ff.8, ["\xe2\x80\xa6"] = 0xf5ff.8,
+  ["\x92"] = 0xb15f.8, ["\xe2\x98\x85"] = 0xb15f.8,
+  ["\x93"] = 0x1b1f.8, ["\xe2\xa7\x97"] = 0x1b1f.8,
+  ["\x95"] = 0xf5bf.8, ["\xcb\x87"] = 0xf5bf.8,
+  ["\x96"] = 0x7adf.8, ["\xe2\x88\xa7"] = 0x7adf.8,
+  ["\x98"] = 0x0f0f.8, ["\xe2\x96\xa4"] = 0x0f0f.8,
+  ["\x99"] = 0x5555.8, ["\xe2\x96\xa5"] = 0x5555.8,
 }) do
   _ENV[k] = v
   _ENV[k .. "\xef\xb8\x8f"] = v
+end
+
+function cstore()
+end
+
+function run()
+  reload()
+  if _init then _init() end
+end
+
+function info()
+end
+
+_ENV["?"] = print
+
+function reset()
+  pal()
+  palt()
+  camera()
+  clip()
+  color(6)
+  fillp()
+  cursor(0, 0)
+end
+
+local rawpairs = pairs
+function pairs(t)
+  if t == nil then return function() end end
+  return rawpairs(t)
+end
+
+function _map_display()
+end
+
+function holdframe()
+end
+
+function serial()
+  return 0
 end

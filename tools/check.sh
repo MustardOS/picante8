@@ -8,7 +8,7 @@ set -eu
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 OUT="$ROOT/tools/out"
-FLAGS="-O1 -w -D__LIBRETRO__"
+FLAGS="${FLAGS:--O1 -w -D__LIBRETRO__}"
 INC="-I$ROOT/src -I$ROOT/src/io -I$ROOT/src/lua -I$ROOT/src/vm -I$ROOT/src/libretro"
 
 mkdir -p "$OUT/obj"
@@ -16,7 +16,7 @@ for C in "$ROOT"/src/lua/*.c; do
 	gcc $FLAGS -c "$C" -I"$ROOT/src/lua" -o "$OUT/obj/$(basename "$C").o"
 done
 for C in "$ROOT"/src/io/*.cpp "$ROOT"/src/vm/*.cpp "$ROOT"/src/libretro/slock_wrapper.cpp "$ROOT/tools/harness.cpp"; do
-	g++ $FLAGS -std=c++17 -c "$C" $INC -o "$OUT/obj/$(basename "$C").o"
+	g++ $FLAGS -std=c++14 -c "$C" $INC -o "$OUT/obj/$(basename "$C").o"
 done
 g++ -o "$OUT/harness" "$OUT"/obj/*.o -lpthread
 

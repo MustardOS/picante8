@@ -1,3 +1,4 @@
+#include <sys/stat.h>
 #include "libretro.h"
 
 #include "common.h"
@@ -238,6 +239,14 @@ extern "C"
     machine->code().loadAPI();
     input.setMachine(machine);
 
+    const char* saveDirectory = nullptr;
+    lua::cartdataDirectory.clear();
+    if (env.retro_cb(RETRO_ENVIRONMENT_GET_SAVE_DIRECTORY, &saveDirectory) && saveDirectory && *saveDirectory)
+    {
+      lua::cartdataDirectory = std::string(saveDirectory) + "/picante8";
+      mkdir(lua::cartdataDirectory.c_str(), 0755);
+    }
+
     if (info && info->data)
     {
       input.reset();
@@ -254,24 +263,36 @@ extern "C"
         std::vector<uint8_t> out;
         unsigned long width, height;
         int result = Platform::loadPNG(out, width, height, (uint8_t*)bdata, info->size, true);
-        assert(result == 0);
+        if (result != 0)
+        {
+          env.logger(RETRO_LOG_ERROR, "[Picante8] The cartridge image could not be decoded\n");
+          return false;
+        }
         r8::io::Stegano stegano;
         uint32_t *buf = new uint32_t[out.size() / 4];
         for (int i = 0; i < out.size() / 4; i++) {
           buf[i] = out[4 * i] | (out[4 * i + 1] << 8) | (out[4 * i + 2] << 16) | (out[4 * i + 3] << 24);
         }
         r8::io::PngData pngData = { buf, NULL, out.size() / 4 };
-        stegano.load(pngData, *machine);
+        const bool loaded = stegano.load(pngData, *machine);
         delete[] buf;
+        if (!loaded)
+        {
+          env.logger(RETRO_LOG_ERROR, "[Picante8] The cartridge code is damaged or could not be compiled\n");
+          return false;
+        }
       }
       else
       {
         //TODO: not efficient since it's copied and it's not checking for '\0'
-        std::string raw(bdata);
-        loader.loadRaw(raw, *machine);
+        std::string raw(bdata, info->size);
+        if (!loader.loadRaw(raw, *machine))
+        {
+          env.logger(RETRO_LOG_ERROR, "[Picante8] The cartridge code could not be compiled\n");
+          return false;
+        }
       }
 
-      machine->memory().backupCartridge();
 
       if (machine->code().hasInit())
       {
@@ -308,6 +329,9 @@ extern "C"
 
   void retro_unload_game(void)
   {
+    if (machine)
+      lua::cartdataFlush();
+
     /* TODO */
     if (screen16)
       delete screen16;
@@ -323,9 +347,9 @@ extern "C"
     /* if code is at 60fps or every 2 frames (30fps) */
     if (machine->code().require60fps() || env.frameCounter % 2 == 0)
     {
-      /* call _update and _draw of PICO-8 code */
-      machine->code().update();
-      machine->code().draw();
+      /* call _update and _draw of PICO-8 code, or carry on from the last flip() */
+      machine->code().frame();
+      lua::cartdataFlush();
 
       /* rasterize screen memory to ARGB framebuffer */
       auto* data = machine->memory().screenData();

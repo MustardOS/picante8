@@ -504,13 +504,19 @@ void luaO_tostring (lua_State *L, StkId obj) {
   if (ttisinteger(obj))
     len = lua_integer2str(buff, sizeof(buff), ivalue(obj));
   else {
-    len = lua_number2str(buff, sizeof(buff), fltvalue(obj));
-#if !defined(LUA_COMPAT_FLOATSTRING)
-    if (buff[strspn(buff, "-0123456789")] == '\0') {  /* looks like an int? */
-      buff[len++] = lua_getlocaledecpoint();
-      buff[len++] = '0';  /* adds '.0' to result */
+    /* PICO-8 shows whole numbers bare and fractions to at most 4 places */
+    const double n = (double)fltvalue(obj);
+    if (n != n || n - n != 0)
+      len = lua_number2str(buff, sizeof(buff), fltvalue(obj));
+    else if (n == floor(n) && n > -2147483648.0 && n < 2147483648.0)
+      len = snprintf(buff, sizeof(buff), "%d", (int)n);
+    else {
+      len = snprintf(buff, sizeof(buff), "%.4f", n);
+      while (len > 0 && buff[len - 1] == '0') len--;
+      if (len > 0 && buff[len - 1] == '.') len--;
+      buff[len] = '\0';
+      if (strcmp(buff, "-0") == 0) { buff[0] = '0'; buff[1] = '\0'; len = 1; }
     }
-#endif
   }
   setsvalue2s(L, obj, luaS_newlstr(L, buff, len));
 }

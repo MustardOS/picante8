@@ -1,3 +1,5 @@
+#include <cstring>
+#include <vector>
 #include "machine.h"
 
 #include <algorithm>
@@ -37,6 +39,9 @@ void Machine::pset(coord_t x, coord_t y, color_t color)
 
 color_t Machine::pget(coord_t x, coord_t y)
 {
+  x -= memory().camera()->x();
+  y -= memory().camera()->y();
+
   if (x < 0 || y < 0 || x >= (coord_t)gfx::SCREEN_WIDTH || y >= (coord_t)gfx::SCREEN_HEIGHT)
     return static_cast<color_t>(0);
   return _memory.screenData(x, y)->get(x);
@@ -113,15 +118,18 @@ void Machine::rectfill(coord_t x0, coord_t y0, coord_t x1, coord_t y1, color_t c
   auto* clip = _memory.clipRect();
   auto cx = memory().camera()->x(), cy = memory().camera()->y();
 
+  if (x0 > x1) std::swap(x0, x1);
+  if (y0 > y1) std::swap(y0, y1);
+
   x0 -= cx;
   y0 -= cy;
   x1 -= cx;
   y1 -= cy;
 
   x0 = std::max(x0, coord_t(clip->x0));
-  x1 = std::min(x1, coord_t(clip->x1));
+  x1 = std::min(x1, coord_t(clip->x1 - 1));
   y0 = std::max(y0, coord_t(clip->y0));
-  y1 = std::min(y1, coord_t(clip->y1));
+  y1 = std::min(y1, coord_t(clip->y1 - 1));
 
   color = _memory.paletteAt(gfx::DRAW_PALETTE_INDEX)->get(color_t(color % gfx::COLOR_COUNT));
 
@@ -178,12 +186,24 @@ void Machine::circFillHelper(coord_t xc, coord_t yc, coord_t x, coord_t y, color
 }
 
 
+/* the union of the rectangles circFillHelper would fill, drawn as one span per row */
 void Machine::circfill(coord_t xc, coord_t yc, amount_t r, color_t color)
 {
-  //TODO: not identical to pico-8 but acceptable for now
+  if (r < 0)
+    return;
+  if (r > 0x7fff)
+    r = 0x7fff;
+
+  std::vector<coord_t> half(r + 2, -1);
+  auto widen = [&half](coord_t row, coord_t width) {
+    if (row >= 0 && row < (coord_t)half.size() && width > half[row])
+      half[row] = width;
+  };
+
   coord_t x = 0, y = r;
   float d = 3 - 2 * r;
-  circFillHelper(xc, yc, x, y, color);
+  widen(y, x);
+  widen(x, y);
 
   while (y >= x)
   {
@@ -197,7 +217,21 @@ void Machine::circfill(coord_t xc, coord_t yc, amount_t r, color_t color)
     else
       d = d + 3 * x + 3;
 
-    circFillHelper(xc, yc, x, y, color);
+    widen(y, x);
+    widen(x, y);
+  }
+
+  for (coord_t row = (coord_t)half.size() - 2; row >= 0; --row)
+    if (half[row + 1] > half[row])
+      half[row] = half[row + 1];
+
+  for (coord_t row = 0; row <= r; ++row)
+  {
+    if (half[row] < 0)
+      continue;
+    rectfill(xc - half[row], yc + row, xc + half[row], yc + row, color);
+    if (row)
+      rectfill(xc - half[row], yc - row, xc + half[row], yc - row, color);
   }
 }
 
@@ -272,7 +306,7 @@ void Machine::sspr(coord_t sx, coord_t sy, coord_t sw, coord_t sh, coord_t dx, c
 }
 
 // TODO: add support for strange characters like symbols
-void Machine::print(const std::string& string, coord_t x, coord_t y, color_t color)
+coord_t Machine::print(const std::string& string, coord_t x, coord_t y, color_t color, coord_t* bottom, PrintState* state)
 {
   
   struct SpecialGlyph
@@ -305,14 +339,35 @@ void Machine::print(const std::string& string, coord_t x, coord_t y, color_t col
     return 0;
   };
 
-  const coord_t sx = x;
-  for (size_t i = 0; i < string.length(); ++i)
+  coord_t sx = x;
+  coord_t right = x;
+  int wide = 1, tall = 1;
+  coord_t lineHeight = TEXT_LINE_HEIGHT;
+  size_t start = 0;
+
+  if (state && state->position > 0)
+  {
+    x = state->x; y = state->y; sx = state->sx; right = state->right;
+    wide = state->wide; tall = state->tall; lineHeight = state->lineHeight; color = state->color;
+    start = state->position;
+  }
+  if (state)
+    state->wait = 0;
+
+  auto finish = [&]() {
+    if (bottom)
+      *bottom = y + lineHeight;
+    return right;
+  };
+
+  for (size_t i = start; i < string.length(); ++i)
   {
     auto c = string[i];
 
     if (c == '\n')
     {
-      y += TEXT_LINE_HEIGHT;
+      y += lineHeight;
+      lineHeight = TEXT_LINE_HEIGHT * tall;
       x = sx;
       continue;
     }
@@ -321,13 +376,37 @@ void Machine::print(const std::string& string, coord_t x, coord_t y, color_t col
     {
       switch (c)
       {
-        case 0: return;                                         /* end of string */
+        case 0: return finish();                                /* end of string */
         case 1: i += 2; break;                                  /* \* repeat, not drawn */
         case 2: i += 1; break;                                  /* \# background colour */
         case 3: x += argument(i + 1) - 16; i += 1; break;       /* \- x shift */
         case 4: y += argument(i + 1) - 16; i += 1; break;       /* \| y shift */
         case 5: x += argument(i + 1) - 16; y += argument(i + 2) - 16; i += 2; break;  /* \+ */
-        case 6: i += 1; break;                                  /* \^ special command */
+        case 6:                                                 /* \^ special command */
+        {
+          const bool off = i + 1 < string.length() && string[i + 1] == '-';
+          if (off) ++i;
+          const char command = i + 1 < string.length() ? string[i + 1] : 0;
+          i += 1;
+
+          /* \^1 to \^9 wait 1, 2, 4 ... 256 frames before carrying on */
+          if (command >= '1' && command <= '9' && state)
+          {
+            *state = { i + 1, 1 << (command - '1'), x, y, sx, right, lineHeight, wide, tall, color };
+            return finish();
+          }
+          if (command == 'c')
+          {
+            cls(static_cast<color_t>(argument(i + 1) & 0x0f));
+            x = sx;
+          }
+          if (command == 'w' || command == 'p') wide = off ? 1 : 2;
+          if (command == 't' || command == 'p') tall = off ? 1 : 2;
+          if (tall * TEXT_LINE_HEIGHT > lineHeight) lineHeight = tall * TEXT_LINE_HEIGHT;
+          if (command && std::strchr("cdsxy", command)) i += 1;
+          else if (command == 'j') i += 2;
+          break;
+        }
         case 7:                                                 /* \a audio, runs to a space */
           while (i + 1 < string.length() && string[i + 1] != ' ') ++i;
           break;
@@ -364,12 +443,16 @@ void Machine::print(const std::string& string, coord_t x, coord_t y, color_t col
         {
           color_t fcolor = sprite->get(tx, ty);
           if (fcolor != 0)
-            pset(x + tx, y + ty, color);
+            for (int py = 0; py < tall; ++py)
+              for (int px = 0; px < wide; ++px)
+                pset(x + tx * wide + px, y + ty * tall + py, color);
         }
 
-      x += width;
+      x += width * wide;
+      if (x > right) right = x;
     }
   }
+  return finish();
 }
 
 void Machine::pal(color_t c0, color_t c1, palette_index_t index)

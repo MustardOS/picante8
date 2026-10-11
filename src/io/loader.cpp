@@ -79,13 +79,13 @@ void Loader::loadFile(const std::string& path, Machine& dest)
   load(loadLines(stream), dest);
 }
 
-void Loader::loadRaw(const std::string& data, Machine& dest)
+bool Loader::loadRaw(const std::string& data, Machine& dest)
 {
   std::stringstream stream(data);
-  load(loadLines(stream), dest);
+  return load(loadLines(stream), dest);
 }
 
-void Loader::load(const std::vector<std::string>& lines, Machine& m)
+bool Loader::load(const std::vector<std::string>& lines, Machine& m)
 { 
   enum class State { HEADER, CODE, GFX, GFF, LABEL, MAP, SFX, MUSIC };
 
@@ -241,5 +241,7 @@ void Loader::load(const std::vector<std::string>& lines, Machine& m)
     }
   }
 
-  m.code().initFromSource(code.str());
+  /* reload() restores the cart as it was before any of its code ran */
+  m.memory().backupCartridge();
+  return m.code().initFromSource(code.str());
 }

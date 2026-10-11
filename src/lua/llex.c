@@ -11,6 +11,7 @@
 
 
 #include <locale.h>
+#include <stdint.h>
 #include <string.h>
 
 #include "lua.h"
@@ -268,13 +269,20 @@ static int read_numeral (LexState *ls, SemInfo *seminfo) {
   save(ls, '\0');
   if (luaO_str2num(luaZ_buffer(ls->buff), &obj) == 0)  /* format error? */
     lexerror(ls, "malformed number", TK_FLT);
+  /* PICO-8 numbers are signed 16.16, so 0xffff is -1 and 0x8000 is -32768 */
   if (ttisinteger(&obj)) {
-    seminfo->i = ivalue(&obj);
+    lua_Integer v = ivalue(&obj);
+    if (v < -32768 || v > 32767)
+      v = (lua_Integer)((int16_t)(uint16_t)(v & 0xffff));
+    seminfo->i = v;
     return TK_INT;
   }
   else {
     lua_assert(ttisfloat(&obj));
-    seminfo->r = fltvalue(&obj);
+    lua_Number v = fltvalue(&obj);
+    if (v >= 32768.0 || v < -32768.0)
+      v -= 65536.0 * l_mathop(floor)((v + 32768.0) / 65536.0);
+    seminfo->r = v;
     return TK_FLT;
   }
 }
@@ -306,6 +314,8 @@ static void read_long_string (LexState *ls, SemInfo *seminfo, int sep) {
     switch (ls->current) {
       case EOZ: {  /* error */
         const char *what = (seminfo ? "string" : "comment");
+        if (!seminfo)  /* PICO-8 lets a long comment run to the end of the code */
+          return;
         const char *msg = luaO_pushfstring(ls->L,
                      "unfinished long %s (starting at line %d)", what, line);
         lexerror(ls, msg, TK_EOS);

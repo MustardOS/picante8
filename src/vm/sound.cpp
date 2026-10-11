@@ -219,7 +219,7 @@ void APU::handleCommands()
         /* stop sound on channel*/
         if (s.index == -1)
         {
-          if (s.channel >= 0 && s.channel <= channels.size())
+          if (s.channel >= 0 && s.channel < (channel_index_t)channels.size())
             channels[s.channel].sound = nullptr;
           continue;
         }
@@ -246,7 +246,7 @@ void APU::handleCommands()
             }
 
 
-        if (s.channel >= 0 && s.channel < channels.size() && s.index >= 0 && s.index <= SOUND_COUNT)
+        if (s.channel >= 0 && s.channel < (channel_index_t)channels.size() && s.index >= 0 && s.index < (sound_index_t)SOUND_COUNT)
         {
           /* overtaking channel */
           auto& channel = channels[s.channel];
@@ -265,7 +265,7 @@ void APU::handleCommands()
       {
         const auto& m = c.music;
 
-        if (m.index == -1)
+        if (m.index < 0 || m.index >= (music_index_t)MUSIC_COUNT)
           mstate.music = nullptr;
         else
         {

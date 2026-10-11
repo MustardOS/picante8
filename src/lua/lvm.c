@@ -781,6 +781,38 @@ void luaV_finishOp (lua_State *L) {
 
 
 
+/*
+** PICO-8 keeps its own API reachable when a cart swaps _ENV for a table of its
+** own. A name that misses through a variable called _ENV falls back to the API
+** functions saved at start up, which live in the registry under P8_API_KEY.
+*/
+#define P8_API_KEY "picante8.api"
+
+static int p8_isglobals (lua_State *L, const TValue *t) {
+  const TValue *g = luaH_getint(hvalue(&G(L)->l_registry), LUA_RIDX_GLOBALS);
+  return ttistable(g) && hvalue(g) == hvalue(t);
+}
+
+static void p8_apifallback (lua_State *L, LClosure *cl, CallInfo *ci,
+                            Instruction i, int isup, StkId ra, const TValue *key) {
+  const TValue *api = luaH_getstr(hvalue(&G(L)->l_registry),
+                                  luaS_newliteral(L, P8_API_KEY));
+  const TValue *fn;
+  const char *name;
+  if (!ttistable(api)) return;
+  fn = luaH_getstr(hvalue(api), tsvalue(key));
+  if (ttisnil(fn)) return;
+  if (isup) {
+    TString *n = cl->p->upvalues[GETARG_B(i)].name;
+    name = n ? getstr(n) : NULL;
+  }
+  else
+    name = luaF_getlocalname(cl->p, GETARG_B(i) + 1,
+                             (int)(ci->u.l.savedpc - cl->p->code) - 1);
+  if (name && strcmp(name, "_ENV") == 0)
+    setobj2s(L, ra, fn);
+}
+
 void luaV_execute (lua_State *L) {
   CallInfo *ci = L->ci;
   LClosure *cl;
@@ -834,13 +866,18 @@ void luaV_execute (lua_State *L) {
       vmcase(OP_GETTABUP) {
         TValue *upval = cl->upvals[GETARG_B(i)]->v;
         TValue *rc = RKC(i);
+        const int custom = !ttistable(upval) || !p8_isglobals(L, upval);
         gettableProtected(L, upval, rc, ra);
+        if (custom && ttisnil(RA(i)) && ttisshrstring(rc))
+          p8_apifallback(L, cl, ci, i, 1, RA(i), rc);
         vmbreak;
       }
       vmcase(OP_GETTABLE) {
         StkId rb = RB(i);
         TValue *rc = RKC(i);
         gettableProtected(L, rb, rc, ra);
+        if (ttisnil(RA(i)) && ttisshrstring(rc))
+          p8_apifallback(L, cl, ci, i, 0, RA(i), rc);
         vmbreak;
       }
       vmcase(OP_SETTABUP) {
@@ -1203,6 +1240,9 @@ void luaV_execute (lua_State *L) {
         TValue *pstep = ra + 2;
         lua_Integer ilimit;
         int stopnow;
+        /* PICO-8 runs a loop with a nil start or limit as if it were 0 */
+        if (ttisnil(init)) setivalue(init, 0);
+        if (ttisnil(plimit)) setivalue(plimit, 0);
         if (ttisinteger(init) && ttisinteger(pstep) &&
             forlimit(plimit, &ilimit, ivalue(pstep), &stopnow)) {
           /* all values are integer */

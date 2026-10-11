@@ -237,6 +237,16 @@ namespace retro8
 
       void renderSounds(int16_t* dest, size_t samples);
 
+      int channelSound(int channel) const
+      {
+        if (channel < 0 || channel >= (int)CHANNEL_COUNT) return -1;
+        if (channels[channel].sound) return channels[channel].soundIndex;
+        if (mstate.music && channel < (int)mstate.channels.size() && mstate.channels[channel].sound) return mstate.channels[channel].soundIndex;
+        return -1;
+      }
+
+      int musicPattern() const { return mstate.music ? mstate.pattern : -1; }
+
       bool isMusicEnabled() const { return _musicEnabled; }
       bool isSoundEnabled() const { return _soundEnabled; }
 

@@ -68,7 +68,17 @@ namespace retro8
     void spr(index_t idx, coord_t x, coord_t y, float w, float h, bool flipX, bool flipY);
     void sspr(coord_t sx, coord_t sy, coord_t sw, coord_t sh, coord_t dx, coord_t dy, coord_t dw, coord_t dh, bool flipX, bool flipY);
 
-    void print(const std::string& string, coord_t x, coord_t y, color_t color);
+    /* where a print stopped to wait for frames, so it can carry on afterwards */
+    struct PrintState
+    {
+      size_t position = 0;
+      int wait = 0;
+      coord_t x = 0, y = 0, sx = 0, right = 0, lineHeight = 0;
+      int wide = 1, tall = 1;
+      color_t color = color_t(0);
+    };
+
+    coord_t print(const std::string& string, coord_t x, coord_t y, color_t color, coord_t* bottom = nullptr, PrintState* state = nullptr);
 
     State& state() { return _state; }
     Memory& memory() { return _memory; }

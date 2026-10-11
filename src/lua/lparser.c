@@ -1630,7 +1630,7 @@ static int test_then_block (LexState *ls, int *escapelist) {
   expr(ls, &v);  /* read condition */
 
   /* if we had parenthesis and there is no then, it's an inline */
-  maybeInline = maybeInline && ls->t.token != TK_THEN;
+  maybeInline = maybeInline && ls->t.token != TK_THEN && ls->t.token != TK_DO;
 
   if (maybeInline) /* surely inline inline, consume ')' */
   {
@@ -1638,7 +1638,9 @@ static int test_then_block (LexState *ls, int *escapelist) {
     return 1;
   }
 
-  checknext(ls, TK_THEN);
+  /* PICO-8 also takes 'do' in place of 'then' */
+  if (!testnext(ls, TK_DO))
+    checknext(ls, TK_THEN);
   if (ls->t.token == TK_GOTO || ls->t.token == TK_BREAK) {
     luaK_goiffalse(ls->fs, &v);  /* will jump to label if condition is true */
     enterblock(fs, &bl, 0);  /* must enter block before 'goto' */

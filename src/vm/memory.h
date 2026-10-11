@@ -37,9 +37,12 @@ namespace retro8
 
   class Memory
   {
+  public:
+    static constexpr int32_t MEMORY_SIZE = 0x10000;
+
   private:
     uint8_t _backup[address::CART_DATA_LENGTH];
-    uint8_t memory[1024 * 32];
+    uint8_t memory[MEMORY_SIZE];
 
     static constexpr size_t BYTES_PER_PALETTE = sizeof(retro8::gfx::palette_t);
     static constexpr size_t BYTES_PER_SPRITE = sizeof(retro8::gfx::sprite_t);
@@ -50,7 +53,7 @@ namespace retro8
   public:
     Memory()
     {
-      memset(memory, 0, 1024 * 32);
+      memset(memory, 0, MEMORY_SIZE);
       memset(_backup, 0, sizeof(_backup));
       paletteAt(gfx::DRAW_PALETTE_INDEX)->reset();
       paletteAt(gfx::SCREEN_PALETTE_INDEX)->reset();
