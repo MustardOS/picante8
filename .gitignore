@@ -1,0 +1,7 @@
+*.o
+*.d
+*.so
+*.so.*
+*.dll
+*.dylib
+tools/out/
