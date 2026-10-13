@@ -3,6 +3,7 @@
 #include "machine.h"
 #include "lua/lua.hpp"
 #include "gen/lua_api.h"
+#include "io/cart.h"
 
 #include <functional>
 #include <iostream>
@@ -23,21 +24,23 @@ using namespace retro8;
 
 using real_t = double;
 
+/* a colour argument becomes the pen (both nibbles, the high one is the fillp colour); without one the pen is used */
+static color_t drawColor(lua_State* L, int index)
+{
+  auto* pen = machine->memory().penColor();
+
+  if (lua_gettop(L) >= index && !lua_isnil(L, index))
+    pen->value = uint8_t((int)lua_tonumber(L, index) & 0xff);
+
+  return color_t(pen->value);
+}
+
 int pset(lua_State* L)
 {
-  int args = lua_gettop(L);
-  //TODO: check validity of arguments
-
   int x = lua_tonumber(L, 1);
   int y = lua_tonumber(L, 2);
-  int c;
 
-  if (args == 3)
-    c = lua_tonumber(L, 3);
-  else
-    c = machine->memory().penColor()->low();
-
-  machine->pset(x, y, static_cast<color_t>(c));
+  machine->fill(x, y, drawColor(L, 3));
 
   return 0;
 }
@@ -47,6 +50,14 @@ int pget(lua_State* L)
   int x = lua_tonumber(L, 1);
   int y = lua_tonumber(L, 2);
 
+  /* off the screen gives 0, or the value at 0x5f5b when bit 4 of 0x5f36 is set */
+  if (x < 0 || y < 0 || x > 127 || y > 127)
+  {
+    const uint8_t* base = machine->memory().base();
+    lua_pushinteger(L, (base[address::DRAW_FLAGS] & 0x10) ? base[0x5f5b] : 0);
+    return 1;
+  }
+
   lua_pushinteger(L, machine->pget(x, y));
 
   return 1;
@@ -54,33 +65,68 @@ int pget(lua_State* L)
 
 int color(lua_State* L)
 {
-  const int previous = machine->memory().penColor()->low();
+  auto* pen = machine->memory().penColor();
+  const int previous = pen->value;
   const int c = lua_isnumber(L, 1) ? (int)lua_tonumber(L, 1) : 6;
 
-  machine->color(static_cast<color_t>(c & 0x0f));
+  pen->value = uint8_t(c & 0xff);
 
   lua_pushinteger(L, previous);
   return 1;
 }
 
+/* line() forgets the last end point, line(x1, y1, [col]) carries on from it */
+static bool lineValid = false;
+static int lineX = 0, lineY = 0;
+
 int line(lua_State* L)
 {
+  if (!lua_isnumber(L, 1))
+  {
+    lineValid = false;
+    return 0;
+  }
+
+  if (!lua_isnumber(L, 4))
+  {
+    const int x1 = lua_tonumber(L, 1), y1 = lua_isnumber(L, 2) ? (int)lua_tonumber(L, 2) : 0;
+    const color_t color = drawColor(L, 3);
+    if (lineValid)
+      machine->line(lineX, lineY, x1, y1, color);
+    lineX = x1;
+    lineY = y1;
+    lineValid = true;
+    return 0;
+  }
+
   int x0 = lua_tonumber(L, 1);
   int y0 = lua_tonumber(L, 2);
   int x1 = lua_tonumber(L, 3);
   int y1 = lua_tonumber(L, 4);
 
-  int c = lua_gettop(L) == 5 ? lua_tonumber(L, 5) : machine->memory().penColor()->low();
-
-  machine->line(x0, y0, x1, y1, static_cast<color_t>(c));
+  machine->line(x0, y0, x1, y1, drawColor(L, 5));
+  lineX = x1;
+  lineY = y1;
+  lineValid = true;
 
   return 0;
 }
 
+/* fillp(p): the 16 pattern bits are the integer part, 0x0.8 makes set bits transparent */
 int fillp(lua_State* L)
 {
-  //TODO: implement
-  return 0;
+  uint8_t* fill = machine->memory().base() + retro8::address::FILL_PATTERN;
+  const double previous = (int16_t)(fill[0] | (fill[1] << 8)) + ((fill[2] & 1) ? 0.5 : 0.0);
+  const double value = lua_isnumber(L, 1) ? lua_tonumber(L, 1) : 0.0;
+  const double whole = std::floor(value);
+  const int pattern = (int)(int64_t)whole & 0xffff;
+
+  fill[0] = uint8_t(pattern & 0xff);
+  fill[1] = uint8_t(pattern >> 8);
+  fill[2] = (value - whole) >= 0.5 ? 1 : 0;
+
+  lua_pushnumber(L, previous);
+  return 1;
 }
 
 int rect(lua_State* L)
@@ -90,9 +136,7 @@ int rect(lua_State* L)
   int x1 = lua_tonumber(L, 3);
   int y1 = lua_tonumber(L, 4);
 
-  int c = lua_gettop(L) == 5 ? lua_tonumber(L, 5) : machine->memory().penColor()->low();
-
-  machine->rect(x0, y0, x1, y1, static_cast<color_t>(c));
+  machine->rect(x0, y0, x1, y1, drawColor(L, 5));
 
   return 0;
 }
@@ -105,9 +149,7 @@ int rectfill(lua_State* L)
   int x1 = lua_tonumber(L, 3);
   int y1 = lua_tonumber(L, 4);
 
-  int c = lua_gettop(L) >= 5 ? lua_tonumber(L, 5) : machine->memory().penColor()->low();
-
-  machine->rectfill(x0, y0, x1, y1, static_cast<color_t>(c));
+  machine->rectfill(x0, y0, x1, y1, drawColor(L, 5));
 
   return 0;
 }
@@ -117,9 +159,8 @@ int circ(lua_State* L)
   int x = lua_tonumber(L, 1);
   int y = lua_tonumber(L, 2);
   int r = lua_gettop(L) >= 3 ? lua_tonumber(L, 3) : 4;
-  int c = lua_gettop(L) >= 4 ? lua_tonumber(L, 4) : machine->memory().penColor()->low();
 
-  machine->circ(x, y, r, static_cast<color_t>(c));
+  machine->circ(x, y, r, drawColor(L, 4));
 
   return 0;
 }
@@ -129,9 +170,11 @@ int circfill(lua_State* L)
   int x = lua_tonumber(L, 1);
   int y = lua_tonumber(L, 2);
   int r = lua_gettop(L) >= 3 ? lua_tonumber(L, 3) : 4;
-  int c = lua_gettop(L) >= 4 ? lua_tonumber(L, 4) : machine->memory().penColor()->low();
 
-  machine->circfill(x, y, r, color_t(c));
+  /* colour bits 0x1800 draw everything outside the circle when 0x5f34 has bit 1 set */
+  const bool inverted = (machine->memory().base()[0x5f34] & 0x02) && lua_isnumber(L, 4) && ((int)(int64_t)lua_tonumber(L, 4) & 0x1800) == 0x1800;
+
+  machine->circfill(x, y, r, drawColor(L, 4), inverted);
 
   return 0;
 }
@@ -175,8 +218,12 @@ int sget(lua_State* L)
   const int x = lua_isnumber(L, 1) ? (int)lua_tonumber(L, 1) : 0;
   const int y = lua_isnumber(L, 2) ? (int)lua_tonumber(L, 2) : 0;
 
+  /* outside the sheet gives 0, or the value at 0x5f59 when bit 4 of 0x5f36 is set */
   if (x < 0 || y < 0 || x >= 128 || y >= 128)
-    lua_pushinteger(L, 0);
+  {
+    uint8_t* base = machine->memory().base();
+    lua_pushinteger(L, (base[address::DRAW_FLAGS] & 0x10) ? base[address::SGET_DEFAULT] : 0);
+  }
   else
     lua_pushinteger(L, machine->memory().spriteSheet(x, y)->get(x));
 
@@ -218,17 +265,33 @@ static int set_fps(lua_State* L)
   return 0;
 }
 
+/* tline(n) sets how many fraction bits the map coordinates carry, 13 by default for tiles and 16 for pixels */
+static int tlineBits = 13;
+
+/* tline draws a line of map pixels, stepping (mdx, mdy) per pixel; 0x5f38 and 0x5f39 wrap the map coordinates by masking them
+ * with the value less 0x0.0001, and 0x5f3a and 0x5f3b then offset them, all in tiles */
 int tline(lua_State* L)
 {
+  if (lua_gettop(L) == 1)
+  {
+    tlineBits = (int)lua_tonumber(L, 1);
+    return 0;
+  }
+
+  const double scale = std::ldexp(1.0, 13 - tlineBits);
   const int x0 = (int)std::floor(luaL_optnumber(L, 1, 0));
   const int y0 = (int)std::floor(luaL_optnumber(L, 2, 0));
   const int x1 = (int)std::floor(luaL_optnumber(L, 3, 0));
   const int y1 = (int)std::floor(luaL_optnumber(L, 4, 0));
-  double mx = luaL_optnumber(L, 5, 0);
-  double my = luaL_optnumber(L, 6, 0);
-  const double mdx = luaL_optnumber(L, 7, 0.125);
-  const double mdy = luaL_optnumber(L, 8, 0);
+  double mx = luaL_optnumber(L, 5, 0) * scale;
+  double my = luaL_optnumber(L, 6, 0) * scale;
+  const double mdx = lua_isnumber(L, 7) ? lua_tonumber(L, 7) * scale : 0.125;
+  const double mdy = lua_isnumber(L, 8) ? lua_tonumber(L, 8) * scale : 0;
   const int layers = (int)luaL_optnumber(L, 9, 0);
+
+  const uint8_t* hw = machine->memory().base();
+  const uint32_t maskX = (uint32_t(hw[0x5f38]) << 16) - 1, maskY = (uint32_t(hw[0x5f39]) << 16) - 1;
+  const int offsetX = hw[0x5f3a], offsetY = hw[0x5f3b];
 
   const gfx::palette_t* palette = machine->memory().paletteAt(gfx::DRAW_PALETTE_INDEX);
   const int dx = x1 - x0, dy = y1 - y0;
@@ -238,15 +301,17 @@ int tline(lua_State* L)
   {
     const int x = steps ? x0 + (int)std::lround((double)dx * i / steps) : x0;
     const int y = steps ? y0 + (int)std::lround((double)dy * i / steps) : y0;
-    const int tx = (int)std::floor(mx), ty = (int)std::floor(my);
+    const uint32_t bx = (uint32_t)(int64_t)std::floor(mx * 65536.0) & maskX;
+    const uint32_t by = (uint32_t)(int64_t)std::floor(my * 65536.0) & maskY;
+    const int tx = (int)((int32_t)bx >> 16) + offsetX, ty = (int)((int32_t)by >> 16) + offsetY;
 
-    if (tx >= 0 && ty >= 0 && tx < (int)gfx::TILE_MAP_WIDTH && ty < (int)gfx::TILE_MAP_HEIGHT)
+    if (machine->memory().inMap(tx, ty))
     {
       const sprite_index_t sprite = *machine->memory().spriteInTileMap(tx, ty);
       if (sprite != 0 && (!layers || (layers & *machine->memory().spriteFlagsFor(sprite)) != 0))
       {
-        const int sx = (sprite % 16) * 8 + ((int)std::floor(mx * 8) & 7);
-        const int sy = (sprite / 16) * 8 + ((int)std::floor(my * 8) & 7);
+        const int sx = (sprite % 16) * 8 + (int)((bx >> 13) & 7);
+        const int sy = (sprite / 16) * 8 + (int)((by >> 13) & 7);
         const color_t color = machine->memory().spriteSheet(sx, sy)->get(sx);
         if (!palette->transparent(color))
           machine->pset(x, y, color);
@@ -263,9 +328,20 @@ int tline(lua_State* L)
 
 static int pal_set(int c0, int c1, palette_index_t index)
 {
+  /* only the draw and screen palettes exist here, the secondary palette of p = 2 is not supported */
+  if (index > gfx::SCREEN_PALETTE_INDEX)
+    return 0;
+
   gfx::palette_t* palette = machine->memory().paletteAt(index);
-  const int previous = palette->get(color_t(c0 & 0x0f));
-  machine->pal(static_cast<color_t>(c0 & 0x0f), static_cast<color_t>(c1 & 0x0f), index);
+  const color_t c = color_t(c0 & 0x0f);
+  if (index == gfx::SCREEN_PALETTE_INDEX)
+  {
+    const int previous = palette->raw(c) & 0x8f;
+    palette->setScreen(c, uint8_t(c1));
+    return previous;
+  }
+  const int previous = palette->get(c);
+  machine->pal(c, static_cast<color_t>(c1 & 0x0f), index);
   return previous;
 }
 
@@ -275,7 +351,7 @@ int pal(lua_State* L)
   if (lua_gettop(L) == 0)
   {
     machine->memory().paletteAt(gfx::DRAW_PALETTE_INDEX)->reset();
-    machine->memory().paletteAt(gfx::SCREEN_PALETTE_INDEX)->reset();
+    machine->memory().paletteAt(gfx::SCREEN_PALETTE_INDEX)->resetScreen();
     return 0;
   }
 
@@ -301,22 +377,34 @@ int pal(lua_State* L)
   return 1;
 }
 
+/* palt(c, t) sets one colour and returns its old setting, palt(bits) sets all 16 with bit 15 for colour 0 and returns the old bits */
 int palt(lua_State* L)
 {
-  /* no arguments, reset palette */
-  if (lua_gettop(L) == 0)
+  gfx::palette_t* palette = machine->memory().paletteAt(gfx::DRAW_PALETTE_INDEX);
+  int previous = 0;
+  for (int i = 0; i < 16; ++i)
+    if (palette->transparent(color_t(i)))
+      previous |= 0x8000 >> i;
+
+  if (lua_gettop(L) == 0 || lua_isnil(L, 1))
   {
-    machine->memory().paletteAt(gfx::DRAW_PALETTE_INDEX)->resetTransparency();
-    machine->memory().paletteAt(gfx::SCREEN_PALETTE_INDEX)->resetTransparency();
+    palette->resetTransparency();
+    lua_pushinteger(L, previous);
+  }
+  else if (lua_gettop(L) == 1)
+  {
+    const int bits = (int)(int64_t)lua_tonumber(L, 1);
+    for (int i = 0; i < 16; ++i)
+      palette->transparent(color_t(i), (bits & (0x8000 >> i)) != 0);
+    lua_pushinteger(L, previous);
   }
   else
   {
-    color_t c = color_t(int(lua_tonumber(L, 1)));
-    int f = lua_toboolean(L, 2);
-
-    machine->memory().paletteAt(gfx::DRAW_PALETTE_INDEX)->transparent(c, f);
+    const color_t c = color_t(int(lua_tonumber(L, 1)) & 0x0f);
+    lua_pushboolean(L, palette->transparent(c));
+    palette->transparent(c, lua_toboolean(L, 2));
   }
-  return 0;
+  return 1;
 }
 
 namespace draw
@@ -395,9 +483,11 @@ int mget(lua_State* L)
   int x = lua_tonumber(L, 1); //TODO: these are optional
   int y = lua_tonumber(L, 2);
 
-  sprite_index_t index = 0;
+  /* outside the map gives 0, or the value at 0x5f5a when bit 4 of 0x5f36 is set */
+  uint8_t* base = machine->memory().base();
+  sprite_index_t index = (base[address::DRAW_FLAGS] & 0x10) ? base[address::MGET_DEFAULT] : 0;
 
-  if (x >= 0 && x < gfx::TILE_MAP_WIDTH && y >= 0 && y < gfx::TILE_MAP_HEIGHT)
+  if (machine->memory().inMap(x, y))
     index = *machine->memory().spriteInTileMap(x, y);
 
   //printf("mget(%d, %d) = %d\n", x, y, index);
@@ -413,7 +503,7 @@ int mset(lua_State* L)
   int y = lua_tonumber(L, 2);
   retro8::sprite_index_t index = lua_tonumber(L, 3);
 
-  if (x >= 0 && x < gfx::TILE_MAP_WIDTH && y >= 0 && y < gfx::TILE_MAP_HEIGHT)
+  if (machine->memory().inMap(x, y))
     *machine->memory().spriteInTileMap(x, y) = index;
 
   return 0;
@@ -591,8 +681,8 @@ namespace sprites
     coord_t dy = lua_tonumber(L, 6);
     coord_t dw = lua_to_or_default(L, number, 7, sw);
     coord_t dh = lua_to_or_default(L, number, 8, sh);
-    bool flipX = lua_to_or_default(L, boolean, 8, false);
-    bool flipY = lua_to_or_default(L, boolean, 8, false);
+    bool flipX = lua_toboolean(L, 9);
+    bool flipY = lua_toboolean(L, 10);
 
     machine->sspr(sx, sy, sw, sh, dx, dy, dw, dh, flipX, flipY);
 
@@ -603,7 +693,10 @@ namespace sprites
 namespace math
 {
   using real_t = double;
-  static constexpr float PI = 3.14159265358979323846;
+  static constexpr real_t PI = 3.14159265358979323846;
+
+  /* PICO-8 maths results are 16.16 numbers, so sin(0.25) is exactly -1 */
+  static inline real_t fixed(real_t value) { return std::floor(value * 65536.0 + 0.5) / 65536.0; }
 
   int cos(lua_State* L)
   {
@@ -611,7 +704,7 @@ namespace math
     {
       real_t angle = lua_tonumber(L, 1);
       real_t value = std::cos(angle * 2 * PI);
-      lua_pushnumber(L, value);
+      lua_pushnumber(L, fixed(value));
     }
     else
       lua_pushnumber(L, 0);
@@ -625,7 +718,7 @@ namespace math
     {
       real_t angle = lua_tonumber(L, 1);
       real_t value = std::sin(-angle * 2 * PI);
-      lua_pushnumber(L, value);
+      lua_pushnumber(L, fixed(value));
     }
     else
       lua_pushnumber(L, 0);
@@ -642,7 +735,7 @@ namespace math
     if (value < 0.0)
       value += 1.0;
 
-    lua_pushnumber(L, value);
+    lua_pushnumber(L, fixed(value) >= 1.0 ? 0.0 : fixed(value));
 
     return 1;
   }
@@ -781,8 +874,9 @@ namespace math
   {
     assert(lua_isnumber(L, 1));
 
+    /* PICO-8 gives 0 for a negative number */
     real_t v = lua_tonumber(L, 1);
-    lua_pushnumber(L, sqrtf(v));
+    lua_pushnumber(L, v > 0 ? fixed(std::sqrt(v)) : 0);
 
     return 1;
   }
@@ -795,15 +889,14 @@ namespace bitwise
   /* the operators and these functions share Lua's PICO-8 16.16 fixed point bit maths */
   int arith(lua_State* L, int op)
   {
-    if (lua_isnumber(L, 1) && (op == LUA_OPBNOT || lua_isnumber(L, 2)))
-    {
-      lua_pushvalue(L, 1);
-      if (op != LUA_OPBNOT)
-        lua_pushvalue(L, 2);
-      lua_arith(L, op);
-    }
-    else
-      lua_pushnumber(L, 0);
+    /* a missing or non-number argument counts as 0, so bor(nil, x) is x */
+    const lua_Number a = lua_isnumber(L, 1) ? lua_tonumber(L, 1) : 0;
+    const lua_Number b = lua_isnumber(L, 2) ? lua_tonumber(L, 2) : 0;
+
+    lua_pushnumber(L, a);
+    if (op != LUA_OPBNOT)
+      lua_pushnumber(L, b);
+    lua_arith(L, op);
 
     return 1;
   }
@@ -828,9 +921,9 @@ namespace sound
   int music(lua_State* L)
   {
 #if SOUND_ENABLED
-    sfx::music_index_t index = lua_tonumber(L, 1);
-    int32_t fadeMs = lua_to_or_default(L, number, 2, 1);
-    int32_t mask = lua_to_or_default(L, number, 3, 0);
+    sfx::music_index_t index = lua_isnumber(L, 1) ? (sfx::music_index_t)lua_tonumber(L, 1) : 0;
+    int32_t fadeMs = lua_isnumber(L, 2) ? (int32_t)lua_tonumber(L, 2) : 0;
+    int32_t mask = lua_isnumber(L, 3) ? (int32_t)lua_tonumber(L, 3) : 0;
 
     machine->sound().music(index, fadeMs, mask);
 #endif
@@ -855,10 +948,9 @@ namespace sound
       return 0;
 
     const int32_t start = std::max(0, lua_isnumber(L, 3) ? (int32_t)lua_tonumber(L, 3) : 0);
-    const int32_t length = machine->memory().sound(index)->length();
-    const int32_t end = lua_isnumber(L, 4) ? std::min(length, start + (int32_t)lua_tonumber(L, 4)) : length;
+    const int32_t length = lua_isnumber(L, 4) ? (int32_t)lua_tonumber(L, 4) : -1;
 
-    machine->sound().play(index, channel, start, end);
+    machine->sound().play(index, channel, start, length);
 #endif
 
     return 0;
@@ -906,22 +998,22 @@ namespace string
     case LUA_TBOOLEAN: lua_pushstring(L, lua_toboolean(L, 1) ? "true" : "false"); break;
     case LUA_TNUMBER:
     {
+      /* flag 1 shows the 16.16 bits in hex, flag 2 shows them as a whole number, true is the same as flag 1 */
       const double value = lua_tonumber(L, 1);
+      const int flags = lua_isnumber(L, 2) ? (int)lua_tonumber(L, 2) : (lua_toboolean(L, 2) ? 1 : 0);
+      const uint32_t bits = (uint32_t)(int64_t)std::floor(value * 65536.0);
 
-      if (lua_toboolean(L, 2))
-      {
-        const uint32_t bits = (uint32_t)(int64_t)std::floor(value * 65536.0);
+      if ((flags & 3) == 3)
+        snprintf(buffer, sizeof(buffer), "0x%08x", (unsigned)bits);
+      else if (flags & 2)
+        snprintf(buffer, sizeof(buffer), "%d", (int32_t)bits);
+      else if (flags & 1)
         snprintf(buffer, sizeof(buffer), "0x%04x.%04x", (unsigned)(bits >> 16), (unsigned)(bits & 0xffff));
-      }
-      else if (value == std::floor(value))
-        snprintf(buffer, sizeof(buffer), "%d", (int)value);
       else
       {
-        snprintf(buffer, sizeof(buffer), "%.4f", value);
-        char* end = buffer + strlen(buffer) - 1;
-        while (end > buffer && *end == '0') *end-- = '\0';
-        if (*end == '.') *end = '\0';
-        if (strcmp(buffer, "-0") == 0) strcpy(buffer, "0");
+        lua_pushvalue(L, 1);
+        lua_tostring(L, -1);
+        break;
       }
 
       lua_pushstring(L, buffer);
@@ -1130,17 +1222,28 @@ namespace platform
 
   int reload(lua_State* L)
   {
-    int32_t dest = lua_to_or_default(L, number, 1, 0);
-    int32_t src = lua_to_or_default(L, number, 2, 0);
+    /* addresses are unsigned 16 bits, so 0x8000, which reads as -32768, is the upper half of memory */
+    int32_t dest = (int32_t)(lua_to_or_default(L, number, 1, 0)) & 0xffff;
+    int32_t src = (int32_t)(lua_to_or_default(L, number, 2, 0)) & 0xffff;
     int32_t length = lua_to_or_default(L, number, 3, address::CART_DATA_LENGTH);
 
-    /* a fourth argument names another cart, which is not supported, so the own cart is used */
-    if (dest < 0 || src < 0 || length <= 0)
+    if (length <= 0)
       return 0;
     length = std::min(length, address::CART_DATA_LENGTH - src);
     length = std::min(length, MEMORY_SIZE - dest);
-    if (length > 0)
-      std::memcpy(machine->memory().base() + dest, machine->memory().backup() + src, length);
+    if (length <= 0)
+      return 0;
+
+    /* a fourth argument reads the data of another cart in the same folder */
+    if (lua_isstring(L, 4))
+    {
+      static uint8_t rom[address::CART_DATA_LENGTH];
+      if (retro8::io::cartRom(lua_tostring(L, 4), rom))
+        std::memcpy(machine->memory().base() + dest, rom + src, length);
+      return 0;
+    }
+
+    std::memcpy(machine->memory().base() + dest, machine->memory().backup() + src, length);
 
     return 0;
   }
@@ -1209,6 +1312,24 @@ namespace platform
 #endif
   }
 
+  static int channel_note(int channel)
+  {
+#if SOUND_ENABLED
+    return machine->sound().channelNote(channel);
+#else
+    return -1;
+#endif
+  }
+
+  static int music_ticks()
+  {
+#if SOUND_ENABLED
+    return machine->sound().musicTicks();
+#else
+    return 0;
+#endif
+  }
+
   static int music_pattern()
   {
 #if SOUND_ENABLED
@@ -1240,17 +1361,20 @@ namespace platform
     {
     case 0: lua_pushnumber(L, lua_gc(L, LUA_GCCOUNT, 0)); break;
     case 1: case 2: lua_pushnumber(L, machine->code().cpuLoad()); break;
-    case 4: case 6: case 31: lua_pushstring(L, ""); break;
+    case 4: case 31: lua_pushstring(L, ""); break;
+    case 6: lua_pushstring(L, lua::cartParam.c_str()); break;
     case 5: lua_pushinteger(L, 41); break;
     case 7: case 8: case 9: lua_pushinteger(L, fps); break;
     case 16: case 17: case 18: case 19: lua_pushinteger(L, channel_sound(n - 16)); break;
     case 46: case 47: case 48: case 49: lua_pushinteger(L, channel_sound(n - 46)); break;
-    case 20: case 21: case 22: case 23: lua_pushinteger(L, channel_sound(n - 20) < 0 ? -1 : 0); break;
-    case 50: case 51: case 52: case 53: lua_pushinteger(L, channel_sound(n - 50) < 0 ? -1 : 0); break;
+    case 20: case 21: case 22: case 23: lua_pushinteger(L, channel_note(n - 20)); break;
+    case 50: case 51: case 52: case 53: lua_pushinteger(L, channel_note(n - 50)); break;
     case 24: case 54: lua_pushinteger(L, music_pattern()); break;
+    case 26: case 56: lua_pushinteger(L, music_ticks()); break;
     case 57: lua_pushboolean(L, music_pattern() >= 0); break;
     case 30: case 110: lua_pushboolean(L, 0); break;
-    case 100: case 101: lua_pushnil(L); break;
+    case 100: if (lua::cartBreadcrumb.empty()) lua_pushnil(L); else lua_pushstring(L, lua::cartBreadcrumb.c_str()); break;
+    case 101: lua_pushnil(L); break;
     default: lua_pushinteger(L, 0); break;
     }
 
@@ -1337,6 +1461,36 @@ namespace platform
       lua_pushinteger(L, fixed >> 16);
     else
       lua_pushnumber(L, fixed / 65536.0);
+    return 1;
+  }
+
+  /* load(cart, [breadcrumb], [param]) ends this cart and starts another from the same folder once the frame is over; anything
+   * that is not a cart file goes to Lua's own load, which PICO-8 does not have */
+  int load(lua_State* L)
+  {
+    const std::string path = lua_isstring(L, 1) && !lua_isnumber(L, 1) ? retro8::io::findCart(lua_tostring(L, 1)) : std::string();
+
+    if (path.empty())
+    {
+      lua_getfield(L, LUA_REGISTRYINDEX, "picante8.lua_load");
+      if (!lua_isfunction(L, -1))
+      {
+        lua_pushboolean(L, 0);
+        return 1;
+      }
+      lua_insert(L, 1);
+      lua_call(L, lua_gettop(L) - 1, LUA_MULTRET);
+      return lua_gettop(L);
+    }
+
+    lua::pendingCart = path;
+    lua::pendingParam = lua_isstring(L, 3) ? lua_tostring(L, 3) : "";
+    lua::cartBreadcrumb = lua_isstring(L, 2) ? lua_tostring(L, 2) : "";
+
+    if (machine->code().isCartThread(L) && lua_isyieldable(L))
+      return lua_yield(L, 0);
+
+    lua_pushboolean(L, 1);
     return 1;
   }
 
@@ -1466,6 +1620,16 @@ void lua::registerFunctions(lua_State* L)
   lua_register(L, "memset", platform::memset);
   lua_register(L, "memcpy", platform::memcpy);
   lua_register(L, "reload", platform::reload);
+
+  lua_getfield(L, LUA_REGISTRYINDEX, "picante8.lua_load");
+  const bool saved = lua_isfunction(L, -1);
+  lua_pop(L, 1);
+  if (!saved)
+  {
+    lua_getglobal(L, "load");
+    lua_setfield(L, LUA_REGISTRYINDEX, "picante8.lua_load");
+  }
+  lua_register(L, "load", platform::load);
   lua_register(L, "printh", platform::printh);
 
   lua_register(L, "flip", platform::flip);
@@ -1649,6 +1813,10 @@ void Code::frame()
     return;
   }
 
+  /* carts may set or swap _update and _draw at any time, so they are looked up again for every frame */
+  if (!_suspended)
+    lookupCallbacks();
+
   if (_suspended)
   {
     const Phase phase = _phase;
@@ -1710,6 +1878,10 @@ void Code::init()
 }
 
 std::string lua::cartdataDirectory;
+std::string lua::pendingCart;
+std::string lua::pendingParam;
+std::string lua::cartParam;
+std::string lua::cartBreadcrumb;
 
 void lua::cartdataFlush()
 {

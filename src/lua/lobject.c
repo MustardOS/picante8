@@ -511,7 +511,11 @@ void luaO_tostring (lua_State *L, StkId obj) {
     else if (n == floor(n) && n > -2147483648.0 && n < 2147483648.0)
       len = snprintf(buff, sizeof(buff), "%d", (int)n);
     else {
-      len = snprintf(buff, sizeof(buff), "%.4f", n);
+      /* four places rounded from the 16 fraction bits, held at .9999 so 0x7fff.ffff never shows as 32768 */
+      const long long bits = (long long)floor(fabs(n) * 65536.0);
+      long long digits = ((bits & 0xffff) * 10000 + 32768) >> 16;
+      if (digits > 9999) digits = 9999;
+      len = snprintf(buff, sizeof(buff), "%s%lld.%04lld", n < 0 ? "-" : "", bits >> 16, digits);
       while (len > 0 && buff[len - 1] == '0') len--;
       if (len > 0 && buff[len - 1] == '.') len--;
       buff[len] = '\0';

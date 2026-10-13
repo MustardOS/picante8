@@ -12,6 +12,13 @@ namespace lua
   extern std::string cartdataDirectory;
   void cartdataFlush();
 
+  /* load() leaves the cart it asked for here, and the host switches to it once the frame has ended */
+  extern std::string pendingCart;
+  extern std::string pendingParam;
+  /* the parameter string and breadcrumb the running cart was loaded with, for stat(6) and stat(100) */
+  extern std::string cartParam;
+  extern std::string cartBreadcrumb;
+
   class Code
   {
   public:

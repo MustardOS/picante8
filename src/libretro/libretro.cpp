@@ -6,6 +6,7 @@
 
 #include "io/loader.h"
 #include "io/stegano.h"
+#include "io/cart.h"
 #include "vm/machine.h"
 #include "vm/input.h"
 
@@ -32,13 +33,40 @@ public:
     delete[] buffer;
   }
 
-  void draw(const r8::gfx::color_byte_t *data, r8::gfx::palette_t *palette) {
+  /* 0x5f2c: 1 to 3 stretch the left or top half, 5 to 7 mirror it, 129 to 131 flip, 133 to 135 rotate by 90, 180 and 270 */
+  void draw(const r8::gfx::color_byte_t *data, r8::gfx::palette_t *palette, uint8_t mode) {
     auto pointer = buffer;
+
+    if (mode != 0) {
+      for (int y = 0; y < 128; ++y) {
+        for (int x = 0; x < 128; ++x) {
+          int sx = x, sy = y;
+          switch (mode) {
+          case 1: sx = x / 2; break;
+          case 2: sy = y / 2; break;
+          case 3: sx = x / 2; sy = y / 2; break;
+          case 5: sx = x < 64 ? x : 127 - x; break;
+          case 6: sy = y < 64 ? y : 127 - y; break;
+          case 7: sx = x < 64 ? x : 127 - x; sy = y < 64 ? y : 127 - y; break;
+          case 129: sx = 127 - x; break;
+          case 130: sy = 127 - y; break;
+          case 131: sx = 127 - x; sy = 127 - y; break;
+          case 133: sx = y; sy = 127 - x; break;
+          case 134: sx = 127 - x; sy = 127 - y; break;
+          case 135: sx = 127 - y; sy = x; break;
+          default: break;
+          }
+          const r8::gfx::color_byte_t* pixels = data + sy * 64 + sx / 2;
+          *pointer++ = colorTable.get(palette->screen((sx & 1) ? pixels->high() : pixels->low()));
+        }
+      }
+      return;
+    }
 
     for (size_t i = 0; i < r8::gfx::BYTES_PER_SCREEN; ++i) {
       const r8::gfx::color_byte_t* pixels = data + i;
-      const auto rc1 = colorTable.get(palette->get((pixels)->low()));
-      const auto rc2 = colorTable.get(palette->get((pixels)->high()));
+      const auto rc1 = colorTable.get(palette->screen((pixels)->low()));
+      const auto rc2 = colorTable.get(palette->screen((pixels)->high()));
 
       *(pointer) = rc1;
       *((pointer)+1) = rc2;
@@ -253,6 +281,19 @@ extern "C"
 
       const char* bdata = static_cast<const char*>(info->data);
 
+      /* other carts that load(), reload() and #include name come from the same folder */
+      r8::io::cartDirectory.clear();
+      lua::cartParam.clear();
+      lua::cartBreadcrumb.clear();
+      lua::pendingCart.clear();
+      if (info->path)
+      {
+        const std::string path(info->path);
+        const size_t slash = path.find_last_of('/');
+        if (slash != std::string::npos)
+          r8::io::cartDirectory = path.substr(0, slash);
+      }
+
       env.logger(RETRO_LOG_INFO, "[Picante8] Loading %s\n", info->path);
 
 
@@ -351,14 +392,18 @@ extern "C"
       machine->code().frame();
       lua::cartdataFlush();
 
+      if (!lua::pendingCart.empty() && r8::io::switchCart(machine))
+        input.setMachine(machine);
+
       /* rasterize screen memory to ARGB framebuffer */
-      auto* data = machine->memory().screenData();
+      auto* data = machine->memory().displayData();
       auto* screenPalette = machine->memory().paletteAt(retro8::gfx::SCREEN_PALETTE_INDEX);
 
+      const uint8_t mode = machine->memory().base()[0x5f2c];
       if (env.isRGB32)
-	screen32->draw(data, screenPalette);
+	screen32->draw(data, screenPalette, mode);
       else
-	screen16->draw(data, screenPalette);
+	screen16->draw(data, screenPalette, mode);
 
       input.manageKeyRepeat();
     }

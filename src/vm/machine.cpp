@@ -37,6 +37,25 @@ void Machine::pset(coord_t x, coord_t y, color_t color)
   }
 }
 
+/* fillp: pattern bit 15 is the top left pixel of each 4x4 cell; a set bit draws the high nibble, or nothing when transparent */
+int Machine::patterned(coord_t x, coord_t y, color_t color)
+{
+  const uint8_t* fill = _memory.base() + address::FILL_PATTERN;
+  const uint16_t pattern = fill[0] | (fill[1] << 8);
+
+  if (pattern & (0x8000 >> (((y & 3) << 2) | (x & 3))))
+    return (fill[2] & 1) ? -1 : (color >> 4) & 0x0f;
+  return color & 0x0f;
+}
+
+void Machine::fill(coord_t x, coord_t y, color_t color)
+{
+  const int c = patterned(x - memory().camera()->x(), y - memory().camera()->y(), color);
+
+  if (c >= 0)
+    pset(x, y, color_t(c));
+}
+
 color_t Machine::pget(coord_t x, coord_t y)
 {
   x -= memory().camera()->x();
@@ -55,7 +74,7 @@ void Machine::line(coord_t x0, coord_t y0, coord_t x1, coord_t y1, color_t color
     if (x0 > x1) std::swap(x0, x1);
 
     for (coord_t x = x0; x <= x1; ++x)
-      pset(x, y0, color);
+      fill(x, y0, color);
   }
   // horizontal
   else if (x0 == x1)
@@ -63,7 +82,7 @@ void Machine::line(coord_t x0, coord_t y0, coord_t x1, coord_t y1, color_t color
     if (y0 > y1) std::swap(y0, y1);
 
     for (coord_t y = y0; y <= y1; ++y)
-      pset(x0, y, color);
+      fill(x0, y, color);
   }
   else
   {
@@ -75,7 +94,7 @@ void Machine::line(coord_t x0, coord_t y0, coord_t x1, coord_t y1, color_t color
 
     while (true)
     {
-      pset(x0, y0, color);
+      fill(x0, y0, color);
 
       if (x0 == x1 && y0 == y1)
         break;
@@ -98,7 +117,7 @@ void Machine::line(coord_t x0, coord_t y0, coord_t x1, coord_t y1, color_t color
 
   // TODO: shouldn't be updated when invoked from other primitives, eg rect
   _state.lastLineEnd.x = x1;
-  _state.lastLineEnd.x = y1;
+  _state.lastLineEnd.y = y1;
 }
 
 void Machine::rect(coord_t x0, coord_t y0, coord_t x1, coord_t y1, color_t color)
@@ -131,28 +150,43 @@ void Machine::rectfill(coord_t x0, coord_t y0, coord_t x1, coord_t y1, color_t c
   y0 = std::max(y0, coord_t(clip->y0));
   y1 = std::min(y1, coord_t(clip->y1 - 1));
 
-  color = _memory.paletteAt(gfx::DRAW_PALETTE_INDEX)->get(color_t(color % gfx::COLOR_COUNT));
+  auto* palette = _memory.paletteAt(gfx::DRAW_PALETTE_INDEX);
+  const uint8_t* fill = _memory.base() + address::FILL_PATTERN;
+
+  if (!fill[0] && !fill[1])
+  {
+    const color_t solid = palette->get(color_t(color & 0x0f));
+
+    for (coord_t y = y0; y <= y1; ++y)
+      for (coord_t x = x0; x <= x1; ++x)
+        _memory.screenData(x, y)->set(x, solid);
+    return;
+  }
 
   for (coord_t y = y0; y <= y1; ++y)
     for (coord_t x = x0; x <= x1; ++x)
-      _memory.screenData(x, y)->set(x, color);
+    {
+      const int c = patterned(x, y, color);
+      if (c >= 0)
+        _memory.screenData(x, y)->set(x, palette->get(color_t(c)));
+    }
 #else
   for (coord_t y = y0; y <= y1; ++y)
     for (coord_t x = x0; x <= x1; ++x)
-      pset(x, y, color);
+      fill(x, y, color);
 #endif
 }
 
 void Machine::circHelper(coord_t xc, coord_t yc, coord_t x, coord_t y, color_t color)
 {
-  pset(xc + x, yc + y, color);
-  pset(xc - x, yc + y, color);
-  pset(xc + x, yc - y, color);
-  pset(xc - x, yc - y, color);
-  pset(xc + y, yc + x, color);
-  pset(xc - y, yc + x, color);
-  pset(xc + y, yc - x, color);
-  pset(xc - y, yc - x, color);
+  fill(xc + x, yc + y, color);
+  fill(xc - x, yc + y, color);
+  fill(xc + x, yc - y, color);
+  fill(xc - x, yc - y, color);
+  fill(xc + y, yc + x, color);
+  fill(xc - y, yc + x, color);
+  fill(xc + y, yc - x, color);
+  fill(xc - y, yc - x, color);
 }
 
 void Machine::circ(coord_t xc, coord_t yc, amount_t r, color_t color)
@@ -187,7 +221,7 @@ void Machine::circFillHelper(coord_t xc, coord_t yc, coord_t x, coord_t y, color
 
 
 /* the union of the rectangles circFillHelper would fill, drawn as one span per row */
-void Machine::circfill(coord_t xc, coord_t yc, amount_t r, color_t color)
+void Machine::circfill(coord_t xc, coord_t yc, amount_t r, color_t color, bool inverted)
 {
   if (r < 0)
     return;
@@ -224,6 +258,29 @@ void Machine::circfill(coord_t xc, coord_t yc, amount_t r, color_t color)
   for (coord_t row = (coord_t)half.size() - 2; row >= 0; --row)
     if (half[row + 1] > half[row])
       half[row] = half[row + 1];
+
+  /* inverted fills every row of the clip area except the circle's own span */
+  if (inverted)
+  {
+    const auto* clip = _memory.clipRect();
+    const coord_t cx = memory().camera()->x(), cy = memory().camera()->y();
+    const coord_t left = clip->x0 + cx, right = clip->x1 - 1 + cx;
+
+    for (coord_t y = clip->y0 + cy; y < clip->y1 + cy; ++y)
+    {
+      const coord_t row = std::abs(y - yc);
+      if (row > r || half[row] < 0)
+        rectfill(left, y, right, y, color);
+      else
+      {
+        if (xc - half[row] > left)
+          rectfill(left, y, xc - half[row] - 1, y, color);
+        if (xc + half[row] < right)
+          rectfill(xc + half[row] + 1, y, right, y, color);
+      }
+    }
+    return;
+  }
 
   for (coord_t row = 0; row <= r; ++row)
   {
@@ -280,28 +337,28 @@ void Machine::sspr(coord_t sx, coord_t sy, coord_t sw, coord_t sh, coord_t dx, c
 {
   const gfx::palette_t* palette = _memory.paletteAt(gfx::DRAW_PALETTE_INDEX);
 
-  float fx = sx, fy = sy;
-  float xr = sw / float(dw);
-  float yr = sh / float(dh);
+  if (dw <= 0 || dh <= 0)
+    return;
 
-  //TODO: flipx flipy, test ratio calculation
+  const float xr = sw / float(dw);
+  const float yr = sh / float(dh);
 
+  /* each target pixel samples the sheet from the far edge when flipped, and outside the sheet reads colour 0 */
   for (coord_t y = 0; y < dh; ++y)
   {
+    const coord_t cy = sy + coord_t((flipY ? dh - 1 - y : y) * yr);
+
     for (coord_t x = 0; x < dw; ++x)
     {
-      coord_t cx = fx, cy = fy;
-      auto pair = _memory.spriteSheet(cx, cy);
-      auto color = pair->get(cx);
+      const coord_t cx = sx + coord_t((flipX ? dw - 1 - x : x) * xr);
+      color_t color = color_t(0);
+
+      if (cx >= 0 && cx < gfx::SPRITE_SHEET_WIDTH && cy >= 0 && cy < gfx::SPRITE_SHEET_HEIGHT)
+        color = _memory.spriteSheet(cx, cy)->get(cx);
 
       if (!palette->transparent(color))
         pset(dx + x, dy + y, color);
-
-      fx += xr;
     }
-
-    fx = sx;
-    fy += yr;
   }
 }
 
@@ -469,7 +526,7 @@ void Machine::map(coord_t cx, coord_t cy, coord_t x, coord_t y, amount_t cw, amo
     for (amount_t tx = 0; tx < cw; ++tx)
     {
       const coord_t mx = cx + tx, my = cy + ty;
-      if (mx < 0 || my < 0 || mx >= (coord_t)gfx::TILE_MAP_WIDTH || my >= (coord_t)gfx::TILE_MAP_HEIGHT)
+      if (!_memory.inMap(mx, my))
         continue;
 
       const sprite_index_t index = *_memory.spriteInTileMap(mx, my);

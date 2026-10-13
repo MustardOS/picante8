@@ -175,6 +175,56 @@ end
 function stop()
 end
 
+function resume()
+end
+
+function folder()
+end
+
+function save()
+end
+
+function ls()
+  return {}
+end
+
+function reboot()
+  run()
+end
+
+function rrectfill(x, y, w, h, r, c)
+  x, y, w, h = math.floor(x), math.floor(y), math.floor(w), math.floor(h)
+  if w < 1 or h < 1 then return end
+  r = math.max(0, math.min(math.floor(r or 0), math.floor((math.min(w, h) - 1) / 2)))
+  local x0, y0, x1, y1 = x + r, y + r, x + w - 1 - r, y + h - 1 - r
+  rectfill(x0, y, x1, y + h - 1, c)
+  rectfill(x, y0, x + w - 1, y1, c)
+  if r > 0 then
+    circfill(x0, y0, r, c)
+    circfill(x1, y0, r, c)
+    circfill(x0, y1, r, c)
+    circfill(x1, y1, r, c)
+  end
+end
+
+function rrect(x, y, w, h, r, c)
+  x, y, w, h = math.floor(x), math.floor(y), math.floor(w), math.floor(h)
+  if w < 1 or h < 1 then return end
+  r = math.max(0, math.min(math.floor(r or 0), math.floor((math.min(w, h) - 1) / 2)))
+  local x0, y0, x1, y1 = x + r, y + r, x + w - 1 - r, y + h - 1 - r
+  rectfill(x0, y, x1, y, c)
+  rectfill(x0, y + h - 1, x1, y + h - 1)
+  rectfill(x, y0, x, y1)
+  rectfill(x + w - 1, y0, x + w - 1, y1)
+  local dx, dy, e = r, 0, 1 - r
+  while r > 0 and dx >= dy do
+    pset(x1 + dx, y0 - dy) pset(x1 + dy, y0 - dx) pset(x0 - dx, y0 - dy) pset(x0 - dy, y0 - dx)
+    pset(x1 + dx, y1 + dy) pset(x1 + dy, y1 + dx) pset(x0 - dx, y1 + dy) pset(x0 - dy, y1 + dx)
+    dy = dy + 1
+    if e < 0 then e = e + 2 * dy + 1 else dx = dx - 1 e = e + 2 * (dy - dx) + 1 end
+  end
+end
+
 function ovalfill(x0, y0, x1, y1, c)
   local cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
   local rx, ry = math.abs(x1 - x0) / 2 + 0.5, math.abs(y1 - y0) / 2 + 0.5

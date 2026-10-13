@@ -287,6 +287,18 @@ bool Stegano::loadPlain(const PngData& data, Machine& m)
   return m.code().initFromSource(code);
 }
 
+bool Stegano::loadRom(const PngData& data, Machine& m)
+{
+  if (data.length != IMAGE_WIDTH * IMAGE_HEIGHT)
+    return false;
+
+  for (size_t i = 0; i < address::CART_DATA_LENGTH; ++i)
+    m.memory().base()[i] = assembleByte(data.data[i]);
+
+  m.memory().backupCartridge();
+  return true;
+}
+
 bool Stegano::load(const PngData& data, Machine& m)
 {
   constexpr size_t SPRITE_SHEET_SIZE = gfx::SPRITE_SHEET_HEIGHT * gfx::SPRITE_SHEET_WIDTH / gfx::PIXEL_TO_BYTE_RATIO;

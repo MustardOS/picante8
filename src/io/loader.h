@@ -4,6 +4,7 @@
 
 #include <vector>
 #include <string>
+#include <sstream>
 
 namespace retro8
 {
@@ -20,8 +21,11 @@ namespace retro8
 
       template<typename T> std::vector<std::string> loadLines(T& stream);
       bool load(const std::vector<std::string>& lines, Machine& dest);
+      void include(std::string name, std::stringstream& code, int depth);
 
     public:
+      /* skip the code, for reading another cart's data */
+      bool dataOnly = false;
 
       bool loadRaw(const std::string& data, Machine& dest);
       void loadFile(const std::string& path, Machine& dest);

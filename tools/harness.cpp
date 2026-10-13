@@ -10,6 +10,8 @@
 #include <chrono>
 #include <unistd.h>
 #include "lua/lua.hpp"
+#include "vm/input.h"
+#include "io/cart.h"
 namespace r8 = retro8;
 r8::Machine *machine;
 uint32_t Platform::getTicks() { return 0; }
@@ -46,6 +48,29 @@ static void profile_report() {
         printf("PROFILE %5.1f%% %s\n", 100.0 * rows[i].first / (total ? total : 1), rows[i].second.c_str());
 }
 
+static const uint8_t dump_rgb[32][3] = {
+    {0, 0, 0}, {29, 43, 83}, {126, 37, 83}, {0, 135, 81}, {171, 82, 54}, {95, 87, 79}, {194, 195, 199}, {255, 241, 232},
+    {255, 0, 77}, {255, 163, 0}, {255, 236, 39}, {0, 228, 54}, {41, 173, 255}, {131, 118, 156}, {255, 119, 168}, {255, 204, 170},
+    {41, 24, 20}, {17, 29, 53}, {66, 33, 54}, {18, 83, 89}, {116, 47, 41}, {73, 51, 59}, {162, 136, 121}, {243, 239, 125},
+    {190, 18, 80}, {255, 108, 36}, {168, 231, 46}, {0, 181, 67}, {6, 90, 181}, {117, 70, 101}, {255, 110, 89}, {255, 157, 129}};
+
+static void dump_frame(const char *dir, int frame) {
+    char path[512];
+    snprintf(path, sizeof(path), "%s/f%05d.ppm", dir, frame);
+    FILE *out = fopen(path, "wb");
+    if (!out) return;
+    fprintf(out, "P6\n128 128\n255\n");
+    const uint8_t *mem = (const uint8_t *) machine->memory().base();
+    for (int i = 0; i < 128 * 128; i++) {
+        uint8_t pair = mem[0x6000 + i / 2];
+        uint8_t c = (i & 1) ? pair >> 4 : pair & 15;
+        uint8_t s = mem[0x5f10 + c];
+        const uint8_t *rgb = dump_rgb[(s & 15) | ((s & 0x80) ? 16 : 0)];
+        fwrite(rgb, 1, 3, out);
+    }
+    fclose(out);
+}
+
 static void on_alarm(int) {
     trace_now = 1;
 }
@@ -56,6 +81,11 @@ int main(int argc, char **argv) {
         alarm(atoi(getenv("P8_TRACE_AFTER")));
     }
     std::ifstream f(argv[1], std::ios::binary);
+    {
+        const std::string path(argv[1]);
+        const size_t slash = path.find_last_of('/');
+        r8::io::cartDirectory = slash == std::string::npos ? "." : path.substr(0, slash);
+    }
     std::vector<uint8_t> data((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
     machine = new r8::Machine();
     machine->font().load();
@@ -83,9 +113,52 @@ int main(int argc, char **argv) {
             lua_sethook(machine->code().cartThread(), profile_hook, LUA_MASKCOUNT, 1000);
         if (machine->code().hasInit()) machine->code().init();
         const auto started = std::chrono::steady_clock::now();
+        static r8::input::InputManager input;
+        input.setMachine(machine);
+        const char *dump = getenv("P8_DUMP");
+        int every = getenv("P8_DUMP_EVERY") ? atoi(getenv("P8_DUMP_EVERY")) : 30;
+        const char *press = getenv("P8_PRESS");
+        FILE *wav = getenv("P8_WAV") ? fopen(getenv("P8_WAV"), "wb") : NULL;
+        uint32_t wavBytes = 0;
+        if (wav) fwrite("RIFF\0\0\0\0WAVEfmt \x10\0\0\0\x01\0\x01\0\x44\xac\0\0\x88\x58\x01\0\x02\0\x10\0data\0\0\0\0", 1, 44, wav);
         for (int i = 0; i < frames; i++) {
+            if (press) {
+                const char *p = press;
+                while (*p) {
+                    int at = 0, button = 0, len = 0;
+                    if (sscanf(p, "%d:%d:%d", &at, &button, &len) == 3) {
+                        if (i == at) input.manageKey(0, button, true);
+                        if (i == at + len) input.manageKey(0, button, false);
+                    }
+                    p = strchr(p, ',');
+                    if (!p) break;
+                    ++p;
+                }
+            }
             machine->code().frame();
+            if (!lua::pendingCart.empty()) {
+                printf("LOAD %s [%s]\n", lua::pendingCart.c_str(), lua::pendingParam.c_str());
+                if (r8::io::switchCart(machine)) input.setMachine(machine);
+            }
+            input.manageKeyRepeat();
+            input.tick();
+            if (dump && (i % every == 0 || i == frames - 1)) dump_frame(dump, i);
+            if (wav) {
+                static int16_t pcm[44100 / 30];
+                const size_t count = machine->code().require60fps() ? 44100 / 60 : 44100 / 30;
+                machine->sound().renderSounds(pcm, count);
+                fwrite(pcm, sizeof(int16_t), count, wav);
+                wavBytes += count * sizeof(int16_t);
+            }
             lua::cartdataFlush();
+        }
+        if (wav) {
+            const uint32_t riff = wavBytes + 36;
+            fseek(wav, 4, SEEK_SET);
+            fwrite(&riff, 4, 1, wav);
+            fseek(wav, 40, SEEK_SET);
+            fwrite(&wavBytes, 4, 1, wav);
+            fclose(wav);
         }
         if (getenv("P8_TIME")) {
             const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();

@@ -30,6 +30,8 @@ namespace retro8
 
     public:
       bool load(const PngData& data, Machine& dest);
+      /* only the cart's data, the first 0x4300 bytes, without its code */
+      bool loadRom(const PngData& data, Machine& dest);
     };
   }
 }

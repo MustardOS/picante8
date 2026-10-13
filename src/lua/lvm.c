@@ -927,7 +927,7 @@ void luaV_execute (lua_State *L) {
         lua_Number nb; lua_Number nc;
         if (ttisinteger(rb) && ttisinteger(rc)) {
           lua_Integer ib = ivalue(rb); lua_Integer ic = ivalue(rc);
-          setivalue(ra, intop(+, ib, ic));
+          setivalue(ra, p8_iwrap(intop(+, ib, ic)));
         }
         else if (tonumber(rb, &nb) && tonumber(rc, &nc)) {
           setfltvalue(ra, luai_numadd(L, nb, nc));
@@ -941,7 +941,7 @@ void luaV_execute (lua_State *L) {
         lua_Number nb; lua_Number nc;
         if (ttisinteger(rb) && ttisinteger(rc)) {
           lua_Integer ib = ivalue(rb); lua_Integer ic = ivalue(rc);
-          setivalue(ra, intop(-, ib, ic));
+          setivalue(ra, p8_iwrap(intop(-, ib, ic)));
         }
         else if (tonumber(rb, &nb) && tonumber(rc, &nc)) {
           setfltvalue(ra, luai_numsub(L, nb, nc));
@@ -955,7 +955,7 @@ void luaV_execute (lua_State *L) {
         lua_Number nb; lua_Number nc;
         if (ttisinteger(rb) && ttisinteger(rc)) {
           lua_Integer ib = ivalue(rb); lua_Integer ic = ivalue(rc);
-          setivalue(ra, intop(*, ib, ic));
+          setivalue(ra, p8_iwrap(intop(*, ib, ic)));
         }
         else if (tonumber(rb, &nb) && tonumber(rc, &nc)) {
           setfltvalue(ra, luai_nummul(L, nb, nc));
@@ -1058,7 +1058,7 @@ void luaV_execute (lua_State *L) {
         lua_Number nb;
         if (ttisinteger(rb)) {
           lua_Integer ib = ivalue(rb);
-          setivalue(ra, intop(-, 0, ib));
+          setivalue(ra, p8_iwrap(intop(-, 0, ib)));
         }
         else if (tonumber(rb, &nb)) {
           setfltvalue(ra, luai_numunm(L, nb));
@@ -1223,7 +1223,7 @@ void luaV_execute (lua_State *L) {
         }
         else {  /* floating loop */
           lua_Number step = fltvalue(ra + 2);
-          lua_Number idx = luai_numadd(L, fltvalue(ra), step); /* inc. index */
+          lua_Number idx = fltvalue(ra) + step; /* inc. index, unwrapped so a loop up to 32767 ends */
           lua_Number limit = fltvalue(ra + 1);
           if (luai_numlt(0, step) ? luai_numle(idx, limit)
                                   : luai_numle(limit, idx)) {
@@ -1260,7 +1260,7 @@ void luaV_execute (lua_State *L) {
           setfltvalue(pstep, nstep);
           if (!tonumber(init, &ninit))
             luaG_runerror(L, "'for' initial value must be a number");
-          setfltvalue(init, luai_numsub(L, ninit, nstep));
+          setfltvalue(init, ninit - nstep);
         }
         ci->u.l.savedpc += GETARG_sBx(i);
         vmbreak;

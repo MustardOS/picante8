@@ -26,6 +26,14 @@ namespace retro8
     static constexpr address_t PEN_COLOR = 0x5f25;
     static constexpr address_t CURSOR = 0x5f26;
     static constexpr address_t CAMERA = 0x5f28;
+    static constexpr address_t FILL_PATTERN = 0x5f31;
+    static constexpr address_t DRAW_FLAGS = 0x5f36;
+    static constexpr address_t GFX_MAPPING = 0x5f54;
+    static constexpr address_t SCREEN_MAPPING = 0x5f55;
+    static constexpr address_t MAP_MAPPING = 0x5f56;
+    static constexpr address_t MAP_WIDTH = 0x5f57;
+    static constexpr address_t SGET_DEFAULT = 0x5f59;
+    static constexpr address_t MGET_DEFAULT = 0x5f5a;
 
     static constexpr address_t SCREEN_DATA = 0x6000;
 
@@ -56,10 +64,31 @@ namespace retro8
       memset(memory, 0, MEMORY_SIZE);
       memset(_backup, 0, sizeof(_backup));
       paletteAt(gfx::DRAW_PALETTE_INDEX)->reset();
-      paletteAt(gfx::SCREEN_PALETTE_INDEX)->reset();
+      paletteAt(gfx::SCREEN_PALETTE_INDEX)->resetScreen();
       clipRect()->reset();
       cursor()->reset();
+      resetMapping();
     }
+
+    /* 0x5f54 picks the sprite sheet, 0x5f55 the screen that drawing goes to, and 0x5f56 and 0x5f57 the map and its width */
+    void resetMapping()
+    {
+      memory[address::GFX_MAPPING] = 0x00;
+      memory[address::SCREEN_MAPPING] = 0x60;
+      memory[address::MAP_MAPPING] = 0x20;
+      memory[address::MAP_WIDTH] = 0x80;
+    }
+
+    address_t mapped(address_t reg) const
+    {
+      const address_t base = address_t(memory[reg]) << 8;
+      return base > 0xe000 ? 0xe000 : base;
+    }
+
+    int32_t mapWidth() const { return memory[address::MAP_WIDTH] ? memory[address::MAP_WIDTH] : 256; }
+    bool legacyMap() const { return memory[address::MAP_MAPPING] == 0x20 && mapWidth() == 128; }
+    int32_t mapHeight() const { return legacyMap() ? 64 : int32_t((0x10000 - mapped(address::MAP_MAPPING)) / mapWidth()); }
+    bool inMap(coord_t x, coord_t y) const { return x >= 0 && y >= 0 && x < mapWidth() && y < mapHeight(); }
 
     void backupCartridge()
     {
@@ -75,8 +104,9 @@ namespace retro8
     gfx::clip_rect_t* clipRect() { return as<gfx::clip_rect_t>(address::CLIP_RECT); }
 
     gfx::color_byte_t* spriteSheet(coord_t x, coord_t y) { return spriteSheet() + x / gfx::PIXEL_TO_BYTE_RATIO + y * gfx::SPRITE_SHEET_PITCH; }
-    gfx::color_byte_t* spriteSheet() { return as<gfx::color_byte_t>(address::SPRITE_SHEET); }
-    gfx::color_byte_t* screenData() { return as<gfx::color_byte_t>(address::SCREEN_DATA); }
+    gfx::color_byte_t* spriteSheet() { return as<gfx::color_byte_t>(mapped(address::GFX_MAPPING)); }
+    gfx::color_byte_t* screenData() { return as<gfx::color_byte_t>(mapped(address::SCREEN_MAPPING)); }
+    gfx::color_byte_t* displayData() { return as<gfx::color_byte_t>(address::SCREEN_DATA); }
     gfx::color_byte_t* screenData(coord_t x, coord_t y) { return screenData() + y * gfx::SCREEN_PITCH + x / gfx::PIXEL_TO_BYTE_RATIO; }
     integral_t* cartData(index_t idx) { return as<integral_t>(address::CART_DATA + idx * sizeof(integral_t)); } //TODO: ENDIANNESS!!
 
@@ -96,18 +126,18 @@ namespace retro8
 
       sprite_index_t *addr;
 
-      if (y >= ROWS_PER_TILE_MAP_HALF)
+      if (!legacyMap())
+        addr = as<sprite_index_t>(mapped(address::MAP_MAPPING) + y * mapWidth() + x);
+      else if (y >= ROWS_PER_TILE_MAP_HALF)
         addr = as<sprite_index_t>(address::TILE_MAP_LOW) + x + (y - ROWS_PER_TILE_MAP_HALF) * gfx::TILE_MAP_WIDTH * sizeof(sprite_index_t);
       else
         addr = as<sprite_index_t>(address::TILE_MAP_HIGH) + x + y * gfx::TILE_MAP_WIDTH * sizeof(sprite_index_t);
-
-      assert((addr >= memory + address::TILE_MAP_LOW && addr <= memory + address::TILE_MAP_LOW * gfx::TILE_MAP_WIDTH * gfx::TILE_MAP_HEIGHT * sizeof(sprite_index_t)));
 
       return addr;
     }
 
     gfx::sprite_t* spriteAt(sprite_index_t index) {
-      return reinterpret_cast<gfx::sprite_t*>(&memory[address::SPRITE_SHEET
+      return reinterpret_cast<gfx::sprite_t*>(&memory[mapped(address::GFX_MAPPING)
         + (index % gfx::SPRITES_PER_SPRITE_SHEET_ROW) * gfx::SPRITE_BYTES_PER_SPRITE_ROW]
         + (index / gfx::SPRITES_PER_SPRITE_SHEET_ROW) * gfx::SPRITE_SHEET_PITCH * gfx::SPRITE_HEIGHT
         ); }

@@ -241,6 +241,8 @@ static int read_binary (LexState *ls, SemInfo *seminfo) {
     }
     else break;
   }
+  if (value >= 32768.0)
+    value -= 65536.0 * l_mathop(floor)((value + 32768.0) / 65536.0);
   if (!fraction || value == l_floor(value)) {
     seminfo->i = (lua_Integer)value;
     return TK_INT;
@@ -279,7 +281,8 @@ static int read_numeral (LexState *ls, SemInfo *seminfo) {
   }
   else {
     lua_assert(ttisfloat(&obj));
-    lua_Number v = fltvalue(&obj);
+    /* the fraction rounds to the nearest 1/65536, so 0.1 is 0x0.199a */
+    lua_Number v = l_mathop(floor)(fltvalue(&obj) * 65536.0 + 0.5) / 65536.0;
     if (v >= 32768.0 || v < -32768.0)
       v -= 65536.0 * l_mathop(floor)((v + 32768.0) / 65536.0);
     seminfo->r = v;

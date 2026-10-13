@@ -35,6 +35,7 @@ namespace retro8
   private:
     void circHelper(coord_t xc, coord_t yc, coord_t x, coord_t y, color_t col);
     void circFillHelper(coord_t xc, coord_t yc, coord_t x, coord_t y, color_t col);
+    int patterned(coord_t x, coord_t y, color_t color);
 
 
   public:
@@ -53,13 +54,14 @@ namespace retro8
     void cls(color_t color);
 
     void pset(coord_t x, coord_t y, color_t color);
+    void fill(coord_t x, coord_t y, color_t color);
     color_t pget(coord_t x, coord_t y);
 
     void line(coord_t x0, coord_t y0, coord_t x1, coord_t y1, color_t color);
     void rect(coord_t x0, coord_t y0, coord_t x1, coord_t y1, color_t color);
     void rectfill(coord_t x0, coord_t y0, coord_t x1, coord_t y1, color_t color);
     void circ(coord_t x, coord_t y, amount_t r, color_t color);
-    void circfill(coord_t x, coord_t y, amount_t r, color_t color);
+    void circfill(coord_t x, coord_t y, amount_t r, color_t color, bool inverted = false);
 
     void pal(color_t c0, color_t c1, palette_index_t index);
 

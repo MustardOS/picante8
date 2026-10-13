@@ -22,6 +22,8 @@ g++ -o "$OUT/harness" "$OUT"/obj/*.o -lpthread
 
 printf "Test cart: "
 "$OUT/harness" "$ROOT/tests/ops.p8" 1 </dev/null | grep -v "^DONE$"
+printf "API cart: "
+"$OUT/harness" "$ROOT/tests/api.p8" 1 </dev/null | grep -v "^DONE$"
 
 [ $# -gt 0 ] || exit 0
 
