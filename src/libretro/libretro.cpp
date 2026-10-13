@@ -11,6 +11,8 @@
 #include "vm/input.h"
 
 #include <stdio.h>
+#include <cstring>
+#include <string>
 #include <cstdarg>
 #include <cstring>
 
@@ -250,9 +252,46 @@ extern "C"
   void retro_set_controller_port_device(unsigned port, unsigned device) { /* TODO */ }
   
 
-  size_t retro_serialize_size(void) { return 0; }
-  bool retro_serialize(void *data, size_t size) { return true; }
-  bool retro_unserialize(const void *data, size_t size) { return true; }
+  /* a state is the machine's own blob behind its length, so the zero padding the frontend's buffer adds is ignored */
+  size_t retro_serialize_size(void)
+  {
+    std::string state;
+    if (!machine || !machine->saveState(state))
+      return 0;
+
+    /* the Lua heap grows and shrinks between frames, so leave room for it to change before the save */
+    const size_t size = sizeof(uint32_t) + state.size();
+    return size + size / 4 + 65536;
+  }
+
+  bool retro_serialize(void *data, size_t size)
+  {
+    std::string state;
+    if (!machine || !machine->saveState(state))
+      return false;
+
+    const uint32_t length = uint32_t(state.size());
+    if (size < sizeof(length) + state.size())
+      return false;
+
+    std::memcpy(data, &length, sizeof(length));
+    std::memcpy(static_cast<uint8_t*>(data) + sizeof(length), state.data(), state.size());
+    std::memset(static_cast<uint8_t*>(data) + sizeof(length) + state.size(), 0, size - sizeof(length) - state.size());
+    return true;
+  }
+
+  bool retro_unserialize(const void *data, size_t size)
+  {
+    uint32_t length = 0;
+    if (!machine || size < sizeof(length))
+      return false;
+
+    std::memcpy(&length, data, sizeof(length));
+    if (size - sizeof(length) < length)
+      return false;
+
+    return machine->loadState(static_cast<const uint8_t*>(data) + sizeof(length), length);
+  }
   void retro_cheat_reset(void) { }
   void retro_cheat_set(unsigned index, bool enabled, const char *code) { }
   unsigned retro_get_region(void) { return 0; }

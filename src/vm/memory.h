@@ -96,6 +96,7 @@ namespace retro8
     }
 
     const uint8_t* backup() const { return _backup; }
+    uint8_t* backupData() { return _backup; }
     uint8_t* base() { return memory; }
 
     gfx::color_byte_t* penColor() { return as<gfx::color_byte_t>(address::PEN_COLOR); }

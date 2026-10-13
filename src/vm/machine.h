@@ -83,6 +83,10 @@ namespace retro8
     coord_t print(const std::string& string, coord_t x, coord_t y, color_t color, coord_t* bottom = nullptr, PrintState* state = nullptr);
 
     State& state() { return _state; }
+
+    /* everything a save state needs: memory, the cart's data, the random generator, sound and the cart's Lua state */
+    bool saveState(std::string& out);
+    bool loadState(const uint8_t* data, size_t size);
     Memory& memory() { return _memory; }
     gfx::Font& font() { return _font; }
     lua::Code& code() { return _code; }

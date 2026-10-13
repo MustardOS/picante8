@@ -2,6 +2,9 @@
 
 #include "machine.h"
 #include "lua/lua.hpp"
+extern "C" {
+#include "lua/eris.h"
+}
 #include "gen/lua_api.h"
 #include "io/cart.h"
 
@@ -582,6 +585,18 @@ int print(lua_State* L)
   lua_pushlstring(L, text.data(), text.size());
   auto* state = static_cast<Machine::PrintState*>(lua_newuserdata(L, sizeof(Machine::PrintState)));
   new (state) Machine::PrintState();
+
+  /* plain data, so a save state taken while a print waits can copy it as it is */
+  if (lua_getfield(L, LUA_REGISTRYINDEX, "picante8.printstate") != LUA_TTABLE)
+  {
+    lua_pop(L, 1);
+    lua_newtable(L);
+    lua_pushboolean(L, 1);
+    lua_setfield(L, -2, "__persist");
+    lua_pushvalue(L, -1);
+    lua_setfield(L, LUA_REGISTRYINDEX, "picante8.printstate");
+  }
+  lua_setmetatable(L, -2);
   state->x = x;
   state->y = y;
   state->color = c;
@@ -1721,6 +1736,8 @@ bool Code::initFromSource(const std::string& code)
   lua_pop(L, 1);
   lua_setfield(L, LUA_REGISTRYINDEX, "picante8.api");
 
+  buildPermanents();
+
   if (luaL_loadstring(L, code.c_str()) != LUA_OK)
   {
     printError("luaL_loadString");
@@ -1728,6 +1745,370 @@ bool Code::initFromSource(const std::string& code)
   }
 
   start(PHASE_TOP);
+  return true;
+}
+
+namespace
+{
+  /* records a value as a permanent under a name, keeping the first name a value is found under */
+  void addPermanent(lua_State* L, int perm, int unperm, int value, const std::string& name)
+  {
+    value = lua_absindex(L, value);
+    const int type = lua_type(L, value);
+    if (type != LUA_TFUNCTION && type != LUA_TTABLE && type != LUA_TUSERDATA && type != LUA_TTHREAD && type != LUA_TLIGHTUSERDATA)
+      return;
+
+    lua_pushvalue(L, value);
+    lua_rawget(L, perm);
+    const bool known = !lua_isnil(L, -1);
+    lua_pop(L, 1);
+    if (known)
+      return;
+
+    lua_pushvalue(L, value);
+    lua_pushstring(L, name.c_str());
+    lua_rawset(L, perm);
+
+    lua_pushstring(L, name.c_str());
+    lua_pushvalue(L, value);
+    lua_rawset(L, unperm);
+  }
+
+  /* a table and the values one level inside it */
+  void addPermanentTable(lua_State* L, int perm, int unperm, int table, const std::string& name)
+  {
+    table = lua_absindex(L, table);
+    addPermanent(L, perm, unperm, table, name);
+    if (lua_type(L, table) != LUA_TTABLE)
+      return;
+
+    lua_pushnil(L);
+    while (lua_next(L, table))
+    {
+      if (lua_type(L, -2) == LUA_TSTRING)
+        addPermanent(L, perm, unperm, -1, name + "." + lua_tostring(L, -2));
+      lua_pop(L, 1);
+    }
+  }
+
+  struct Blob
+  {
+    std::string data;
+
+    template<typename T> void put(const T& value) { data.append(reinterpret_cast<const char*>(&value), sizeof(T)); }
+    void putString(const std::string& value) { put<uint32_t>(uint32_t(value.size())); data.append(value); }
+  };
+
+  struct Reader
+  {
+    const char* at;
+    const char* end;
+
+    template<typename T> bool get(T& value)
+    {
+      if (size_t(end - at) < sizeof(T)) return false;
+      std::memcpy(&value, at, sizeof(T));
+      at += sizeof(T);
+      return true;
+    }
+
+    bool getString(std::string& value)
+    {
+      uint32_t length = 0;
+      if (!get(length) || size_t(end - at) < length) return false;
+      value.assign(at, length);
+      at += length;
+      return true;
+    }
+  };
+
+  int persistRoot(lua_State* L)
+  {
+    eris_persist(L, 1, 2);
+    return 1;
+  }
+
+  int unpersistRoot(lua_State* L)
+  {
+    eris_unpersist(L, 1, 2);
+    return 1;
+  }
+}
+
+void Code::buildPermanents()
+{
+  lua_newtable(L);
+  const int perm = lua_gettop(L);
+  lua_newtable(L);
+  const int unperm = lua_gettop(L);
+  lua_newtable(L);
+  const int original = lua_gettop(L);
+
+  lua_pushglobaltable(L);
+  addPermanent(L, perm, unperm, -1, "g");
+  lua_pushnil(L);
+  while (lua_next(L, -2))
+  {
+    if (lua_type(L, -2) == LUA_TSTRING)
+    {
+      addPermanentTable(L, perm, unperm, -1, std::string("g.") + lua_tostring(L, -2));
+      lua_pushvalue(L, -2);
+      lua_pushvalue(L, -2);
+      lua_rawset(L, original);
+    }
+    lua_pop(L, 1);
+  }
+  lua_pop(L, 1);
+
+  lua_getfield(L, LUA_REGISTRYINDEX, LUA_LOADED_TABLE);
+  lua_pushnil(L);
+  while (lua_next(L, -2))
+  {
+    if (lua_type(L, -2) == LUA_TSTRING)
+      addPermanentTable(L, perm, unperm, -1, std::string("lib.") + lua_tostring(L, -2));
+    lua_pop(L, 1);
+  }
+  lua_pop(L, 1);
+
+  const char* registryNames[] = { "picante8.api", "picante8.lua_load" };
+  for (const char* name : registryNames)
+  {
+    lua_getfield(L, LUA_REGISTRYINDEX, name);
+    addPermanentTable(L, perm, unperm, -1, std::string("reg.") + name);
+    lua_pop(L, 1);
+  }
+
+  lua_pushliteral(L, "");
+  if (lua_getmetatable(L, -1))
+  {
+    addPermanentTable(L, perm, unperm, -1, "strmt");
+    lua_pop(L, 1);
+  }
+  lua_pop(L, 1);
+
+  lua_pushthread(L);
+  addPermanent(L, perm, unperm, -1, "mainthread");
+  lua_pop(L, 1);
+
+  /* a print waiting for frames resumes through this continuation, which Eris stores by name like any C function */
+  lua_pushcfunction(L, (lua_CFunction)(void (*)(void))print_continue);
+  addPermanent(L, perm, unperm, -1, "k.print_continue");
+  lua_pop(L, 1);
+
+  lua_setfield(L, LUA_REGISTRYINDEX, "picante8.globals");
+  lua_setfield(L, LUA_REGISTRYINDEX, "picante8.unperm");
+  lua_setfield(L, LUA_REGISTRYINDEX, "picante8.perm");
+}
+
+bool Code::saveState(std::string& out)
+{
+  if (!L)
+    return false;
+
+  const int top = lua_gettop(L);
+
+  lua_pushcfunction(L, persistRoot);
+  lua_getfield(L, LUA_REGISTRYINDEX, "picante8.perm");
+  if (!lua_istable(L, -1))
+  {
+    lua_settop(L, top);
+    return false;
+  }
+
+  lua_newtable(L);
+  const int root = lua_gettop(L);
+  lua_getfield(L, LUA_REGISTRYINDEX, "picante8.globals");
+  const int original = lua_gettop(L);
+
+  /* only the globals the cart has added or changed are stored, the rest are already here when it loads */
+  lua_newtable(L);
+  lua_pushglobaltable(L);
+  lua_pushnil(L);
+  while (lua_next(L, -2))
+  {
+    lua_pushvalue(L, -2);
+    lua_rawget(L, original);
+    const bool same = lua_rawequal(L, -1, -2);
+    lua_pop(L, 1);
+    if (same)
+      lua_pop(L, 1);
+    else
+    {
+      lua_pushvalue(L, -2);
+      lua_insert(L, -2);
+      lua_rawset(L, -5);
+    }
+  }
+  lua_pop(L, 1);
+  lua_setfield(L, root, "g");
+
+  /* and API globals the cart has cleared, so they stay cleared */
+  lua_newtable(L);
+  const int removedList = lua_gettop(L);
+  int removed = 0;
+  lua_pushnil(L);
+  while (lua_next(L, original))
+  {
+    lua_pop(L, 1);
+    lua_pushglobaltable(L);
+    lua_pushvalue(L, -2);
+    lua_rawget(L, -2);
+    const bool gone = lua_isnil(L, -1);
+    lua_pop(L, 2);
+    if (gone)
+    {
+      lua_pushvalue(L, -1);
+      lua_rawseti(L, removedList, ++removed);
+    }
+  }
+  lua_setfield(L, root, "removed");
+  lua_pop(L, 1);
+
+  if (_suspended && _thread)
+  {
+    lua_pushthread(_thread);
+    lua_xmove(_thread, L, 1);
+    lua_setfield(L, root, "thread");
+  }
+
+  /* the collector stays off while Eris works, as it walks objects Eris has only half built */
+  lua_gc(L, LUA_GCSTOP, 0);
+  const int persistStatus = lua_pcall(L, 2, 1, 0);
+  lua_gc(L, LUA_GCRESTART, 0);
+  if (persistStatus != LUA_OK)
+  {
+    std::cout << "Save state failed: " << (lua_isstring(L, -1) ? lua_tostring(L, -1) : "unknown error") << std::endl;
+    lua_settop(L, top);
+    return false;
+  }
+
+  size_t length = 0;
+  const char* persisted = lua_tolstring(L, -1, &length);
+
+  Blob blob;
+  blob.put<double>(_time);
+  blob.put<int32_t>(int32_t(_phase));
+  blob.put<int32_t>(_suspended ? 1 : 0);
+  blob.put<int32_t>(_waitFrames);
+  blob.put<int32_t>(_fps);
+  blob.putString(std::string(persisted, length));
+  out = std::move(blob.data);
+
+  lua_settop(L, top);
+  return true;
+}
+
+bool Code::loadState(const std::string& in)
+{
+  if (!L)
+    return false;
+
+  Reader reader = { in.data(), in.data() + in.size() };
+  double time = 0.0;
+  int32_t phase = 0, suspended = 0, waitFrames = 0, fps = 0;
+  std::string persisted;
+  if (!reader.get(time) || !reader.get(phase) || !reader.get(suspended) || !reader.get(waitFrames) || !reader.get(fps) ||
+      !reader.getString(persisted))
+    return false;
+
+  const int top = lua_gettop(L);
+
+  lua_pushcfunction(L, unpersistRoot);
+  lua_getfield(L, LUA_REGISTRYINDEX, "picante8.unperm");
+  if (!lua_istable(L, -1))
+  {
+    lua_settop(L, top);
+    return false;
+  }
+  lua_pushlstring(L, persisted.data(), persisted.size());
+
+  lua_gc(L, LUA_GCSTOP, 0);
+  const int unpersistStatus = lua_pcall(L, 2, 1, 0);
+  lua_gc(L, LUA_GCRESTART, 0);
+  if (unpersistStatus != LUA_OK || !lua_istable(L, -1))
+  {
+    std::cout << "Load state failed: " << (lua_isstring(L, -1) ? lua_tostring(L, -1) : "unknown error") << std::endl;
+    lua_settop(L, top);
+    return false;
+  }
+  const int root = lua_gettop(L);
+
+  lua_getfield(L, LUA_REGISTRYINDEX, "picante8.globals");
+  const int original = lua_gettop(L);
+  lua_pushglobaltable(L);
+  const int globals = lua_gettop(L);
+
+  /* the globals go back to exactly what they were: anything the cart added since is cleared first */
+  lua_newtable(L);
+  const int clear = lua_gettop(L);
+  int clearCount = 0;
+  lua_pushnil(L);
+  while (lua_next(L, globals))
+  {
+    lua_pop(L, 1);
+    lua_pushvalue(L, -1);
+    lua_rawget(L, original);
+    const bool keep = !lua_isnil(L, -1);
+    lua_pop(L, 1);
+    if (!keep)
+    {
+      lua_pushvalue(L, -1);
+      lua_rawseti(L, clear, ++clearCount);
+    }
+  }
+  for (int i = 1; i <= clearCount; ++i)
+  {
+    lua_rawgeti(L, clear, i);
+    lua_pushnil(L);
+    lua_rawset(L, globals);
+  }
+
+  lua_pushnil(L);
+  while (lua_next(L, original))
+  {
+    lua_pushvalue(L, -2);
+    lua_insert(L, -2);
+    lua_rawset(L, globals);
+  }
+
+  lua_getfield(L, root, "g");
+  lua_pushnil(L);
+  while (lua_next(L, -2))
+  {
+    lua_pushvalue(L, -2);
+    lua_insert(L, -2);
+    lua_rawset(L, globals);
+  }
+  lua_pop(L, 1);
+
+  lua_getfield(L, root, "removed");
+  const lua_Integer removedCount = luaL_len(L, -1);
+  for (lua_Integer i = 1; i <= removedCount; ++i)
+  {
+    lua_rawgeti(L, -1, i);
+    lua_pushnil(L);
+    lua_rawset(L, globals);
+  }
+  lua_pop(L, 1);
+
+  dropThread();
+  lua_getfield(L, root, "thread");
+  if (lua_isthread(L, -1))
+  {
+    _thread = lua_tothread(L, -1);
+    _threadRef = luaL_ref(L, LUA_REGISTRYINDEX);
+  }
+  else
+    lua_pop(L, 1);
+
+  _time = time;
+  _phase = Phase(phase);
+  _suspended = suspended && _thread;
+  _waitFrames = waitFrames;
+  _fps = fps;
+
+  lua_settop(L, top);
+  lookupCallbacks();
   return true;
 }
 

@@ -3,6 +3,7 @@
 #include "machine.h"
 
 #include <algorithm>
+#include <sstream>
 
 using namespace retro8;
 
@@ -538,3 +539,94 @@ void Machine::map(coord_t cx, coord_t cy, coord_t x, coord_t y, amount_t cw, amo
     }
   }
 }
+
+namespace
+{
+  constexpr uint32_t STATE_MAGIC = 0x31533850; /* "P8S1" */
+
+  void putChunk(std::string& out, const std::string& chunk)
+  {
+    const uint32_t length = uint32_t(chunk.size());
+    out.append(reinterpret_cast<const char*>(&length), sizeof(length));
+    out.append(chunk);
+  }
+
+  bool getChunk(const uint8_t*& at, const uint8_t* end, std::string& chunk)
+  {
+    uint32_t length = 0;
+    if (size_t(end - at) < sizeof(length)) return false;
+    std::memcpy(&length, at, sizeof(length));
+    at += sizeof(length);
+    if (size_t(end - at) < length) return false;
+    chunk.assign(reinterpret_cast<const char*>(at), length);
+    at += length;
+    return true;
+  }
+}
+
+bool Machine::saveState(std::string& out)
+{
+  std::string lua;
+  if (!_code.saveState(lua))
+    return false;
+
+  std::ostringstream rnd;
+  rnd << _state.rnd;
+
+  out.clear();
+  out.append(reinterpret_cast<const char*>(&STATE_MAGIC), sizeof(STATE_MAGIC));
+  putChunk(out, std::string(reinterpret_cast<const char*>(_memory.base()), Memory::MEMORY_SIZE));
+  putChunk(out, std::string(reinterpret_cast<const char*>(_memory.backup()), address::CART_DATA_LENGTH));
+  putChunk(out, rnd.str());
+  putChunk(out, std::string(reinterpret_cast<const char*>(&_state.lastLineEnd), sizeof(_state.lastLineEnd)));
+  putChunk(out, lua::cartParam);
+  putChunk(out, lua::cartBreadcrumb);
+
+  std::string sound;
+#if SOUND_ENABLED
+  _sound.saveState(sound);
+#endif
+  putChunk(out, sound);
+  putChunk(out, lua);
+  return true;
+}
+
+bool Machine::loadState(const uint8_t* data, size_t size)
+{
+  const uint8_t* at = data;
+  const uint8_t* end = data + size;
+
+  uint32_t magic = 0;
+  if (size < sizeof(magic)) return false;
+  std::memcpy(&magic, at, sizeof(magic));
+  at += sizeof(magic);
+  if (magic != STATE_MAGIC) return false;
+
+  std::string memory, backup, rnd, lineEnd, param, breadcrumb, sound, lua;
+  if (!getChunk(at, end, memory) || !getChunk(at, end, backup) || !getChunk(at, end, rnd) || !getChunk(at, end, lineEnd) ||
+      !getChunk(at, end, param) || !getChunk(at, end, breadcrumb) || !getChunk(at, end, sound) || !getChunk(at, end, lua))
+    return false;
+
+  if (memory.size() != size_t(Memory::MEMORY_SIZE) || backup.size() != size_t(address::CART_DATA_LENGTH) ||
+      lineEnd.size() != sizeof(_state.lastLineEnd))
+    return false;
+
+  /* the Lua state goes first, as it is the part that can be refused */
+  if (!_code.loadState(lua))
+    return false;
+
+  std::memcpy(_memory.base(), memory.data(), memory.size());
+  std::memcpy(_memory.backupData(), backup.data(), backup.size());
+  std::istringstream rndIn(rnd);
+  rndIn >> _state.rnd;
+  std::memcpy(&_state.lastLineEnd, lineEnd.data(), lineEnd.size());
+  lua::cartParam = param;
+  lua::cartBreadcrumb = breadcrumb;
+
+#if SOUND_ENABLED
+  if (!sound.empty())
+    _sound.loadState(sound);
+#endif
+  return true;
+}
+

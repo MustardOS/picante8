@@ -82,6 +82,12 @@ namespace lua
     void update();
     void draw();
 
+    /* the values present before the cart runs, which save states refer to by name rather than storing */
+    void buildPermanents();
+    /* the cart's globals, its suspended thread and the frame timing, as written by Eris */
+    bool saveState(std::string& out);
+    bool loadState(const std::string& in);
+
 #if TEST_MODE
     lua_State* state() const { return L; }
 #endif

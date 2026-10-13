@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <type_traits>
 
 #if SOUND_ENABLED
 
@@ -619,6 +620,62 @@ void APU::renderSounds(int16_t* dest, size_t totalSamples)
   }
 
   mutex.unlock();
+}
+
+namespace
+{
+  template<typename T> void putRaw(std::string& out, const T& value)
+  {
+    static_assert(std::is_trivially_copyable<T>::value, "save state fields must be plain data");
+    out.append(reinterpret_cast<const char*>(&value), sizeof(T));
+  }
+
+  template<typename T> bool getRaw(const char*& at, const char* end, T& value)
+  {
+    if (size_t(end - at) < sizeof(T)) return false;
+    std::memcpy(&value, at, sizeof(T));
+    at += sizeof(T);
+    return true;
+  }
+}
+
+void APU::saveState(std::string& out)
+{
+  mutex.lock();
+  out.clear();
+  putRaw(out, sfxChannels);
+  putRaw(out, musicChannels);
+  putRaw(out, pattern);
+  putRaw(out, patternPlayed);
+  putRaw(out, patternLength);
+  putRaw(out, musicMask);
+  putRaw(out, musicVolume);
+  putRaw(out, musicFade);
+  putRaw(out, musicStopping);
+  putRaw(out, starts);
+  putRaw(out, random);
+  putRaw(out, lowpassHistory);
+  putRaw(out, lowpassAt);
+  mutex.unlock();
+}
+
+bool APU::loadState(const std::string& in)
+{
+  const char* at = in.data();
+  const char* end = at + in.size();
+
+  mutex.lock();
+  const bool ok = getRaw(at, end, sfxChannels) && getRaw(at, end, musicChannels) && getRaw(at, end, pattern) &&
+    getRaw(at, end, patternPlayed) && getRaw(at, end, patternLength) && getRaw(at, end, musicMask) &&
+    getRaw(at, end, musicVolume) && getRaw(at, end, musicFade) && getRaw(at, end, musicStopping) &&
+    getRaw(at, end, starts) && getRaw(at, end, random) && getRaw(at, end, lowpassHistory) && getRaw(at, end, lowpassAt);
+  if (!ok || lowpassAt >= LOWPASS_TAPS)
+  {
+    init();
+    lowpassAt = 0;
+  }
+  mutex.unlock();
+  return ok;
 }
 
 #endif

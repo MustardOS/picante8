@@ -4,6 +4,7 @@
 #include "common.h"
 
 #include <array>
+#include <string>
 #include <vector>
 #ifdef __LIBRETRO__
 #include "slock_wrapper.h"
@@ -215,6 +216,10 @@ namespace retro8
       void music(music_index_t index, int32_t fadeMs, int32_t mask);
 
       void renderSounds(int16_t* dest, size_t samples);
+
+      /* the channels, music position and filters, for save states */
+      void saveState(std::string& out);
+      bool loadState(const std::string& in);
 
       int channelSound(int channel) const;
       int channelNote(int channel) const;

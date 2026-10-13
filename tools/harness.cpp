@@ -136,6 +136,27 @@ int main(int argc, char **argv) {
                 }
             }
             machine->code().frame();
+            if (const char *spec = getenv("P8_STATE")) {
+                /* P8_STATE=S:L saves after frame S and restores that state after frame L */
+                static std::string saved;
+                int saveAt = -1, loadAt = -1;
+                sscanf(spec, "%d:%d", &saveAt, &loadAt);
+                if (i == saveAt) {
+                    const bool ok = machine->saveState(saved);
+                    printf("STATE save %s %zu\n", ok ? "ok" : "failed", saved.size());
+                    if (const char *file = getenv("P8_STATE_OUT")) {
+                        FILE *f = fopen(file, "wb");
+                        if (f) { fwrite(saved.data(), 1, saved.size(), f); fclose(f); }
+                    }
+                }
+                /* P8_STATE_IN loads a saved state from a file after frame 1, or after the load frame of P8_STATE when one is given */
+                if (getenv("P8_STATE_IN") && i == (loadAt < 0 ? 1 : loadAt)) {
+                    std::ifstream in(getenv("P8_STATE_IN"), std::ios::binary);
+                    saved.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+                    if (loadAt < 0) loadAt = 1;
+                }
+                if (i == loadAt) printf("STATE load %s\n", machine->loadState((const uint8_t *) saved.data(), saved.size()) ? "ok" : "failed");
+            }
             if (!lua::pendingCart.empty()) {
                 printf("LOAD %s [%s]\n", lua::pendingCart.c_str(), lua::pendingParam.c_str());
                 if (r8::io::switchCart(machine)) input.setMachine(machine);
