@@ -78,6 +78,8 @@ void Voice::start(sound_index_t sound, int32_t first, int32_t notes)
   played = 0.0;
   clock = 0;
   released = false;
+  fade = 0;
+  crossfade = 0;
   lastKey = NO_KEY;
   lastVolume = 0.0f;
 }
@@ -181,6 +183,7 @@ void APU::playSound(sound_index_t index, channel_index_t channel, int32_t start,
 
       if (index == -1)
       {
+        ghostChannel(sfxChannels[i]);
         sfxChannels[i].voice.stop();
         sfxChannels[i].instrument.stop();
       }
@@ -233,6 +236,7 @@ void APU::playSound(sound_index_t index, channel_index_t channel, int32_t start,
   }
 
   Channel& c = sfxChannels[channel];
+  ghostChannel(c);
   c.voice.start(index, std::max(0, start), length > 0 ? length : -1);
   c.instrument.stop();
   c.started = ++starts;
@@ -300,6 +304,7 @@ void APU::startPattern(music_index_t index)
     }
 
     const Sound* sound = memory.sound(m->sound(i));
+    ghostChannel(c);
     c.voice.start(m->sound(i), 0, -1);
 
     const int64_t note = noteSamples(sound, i);
@@ -341,6 +346,30 @@ int32_t APU::noteSamples(const Sound* sound, channel_index_t channel) const
 {
   const int32_t speed = std::max<int32_t>(1, sound->speed) * SAMPLES_PER_TICK;
   return (control(0) & (1 << channel)) ? speed * 2 : speed;
+}
+
+/* zepto8 fades a channel over 1/130 s when its sound changes sharply, which also matches the PICO-8 recordings best */
+int32_t APU::ghostSamples()
+{
+  return SAMPLE_RATE / 130;
+}
+
+void APU::ghostChannel(Channel& c)
+{
+  if (!c.voice.active() || c.voice.note < 0)
+    return;
+
+  c.ghostVoice = c.voice;
+  c.ghostVoice.frozen = true;
+  c.ghostVoice.fade = 0;
+  c.ghostInstrument = c.instrument;
+  c.ghostCount = ghostSamples();
+}
+
+/* the length that brought instruments that change waveform every note closest to PICO-8 */
+int32_t APU::crossfadeSamples()
+{
+  return 120;
 }
 
 float APU::noise(Voice& voice, float frequency, const Sound* sound)
@@ -400,18 +429,19 @@ float APU::oscillator(Voice& voice, Waveform waveform, float frequency, const So
   return out;
 }
 
-/* owner is set for a top level sound, whose notes may play sfx 0 to 7 as instruments through the owner's second voice */
-float APU::renderVoice(Voice& voice, channel_index_t channel, int32_t keyShift, float pitchScale, float volumeScale, Channel* owner)
+/* instrument is set for a top level sound, whose notes may play sfx 0 to 7 as instruments through that second voice, and
+   ghosts is the channel that keeps a copy of the sound to fade out when a note changes */
+float APU::renderVoice(Voice& voice, channel_index_t channel, int32_t keyShift, float pitchScale, float volumeScale, Voice* instrument, Channel* ghosts)
 {
   if (!voice.active())
     return 0.0f;
 
   const Sound* sound = memory.sound(voice.index);
-  int32_t n = int32_t(voice.offset);
+  int32_t n = voice.fade > 0 || voice.frozen ? voice.note : int32_t(voice.offset);
+  bool looped = false;
 
   if (n != voice.note)
   {
-    bool looped = false;
     if (sound->loops() && !voice.released && voice.note == sound->loopEnd - 1 && n >= sound->loopEnd)
     {
       voice.offset -= sound->loopEnd - sound->loopStart;
@@ -419,15 +449,39 @@ float APU::renderVoice(Voice& voice, channel_index_t channel, int32_t keyShift, 
       looped = true;
     }
 
-    if (n >= sound->length() || (voice.limit > 0 && voice.played >= voice.limit))
+    const bool ended = n >= sound->length() || (voice.limit > 0 && voice.played >= voice.limit);
+    if (ended && voice.note < 0)
     {
       voice.stop();
-      if (owner)
-        owner->instrument.stop();
+      if (instrument)
+        instrument->stop();
       return 0.0f;
     }
+  }
 
+  /* the last note carries on while it fades, so the sound does not stop with a click */
+  if (voice.fade == 0 && n != voice.note && voice.note >= 0 &&
+      (n >= sound->length() || (voice.limit > 0 && voice.played >= voice.limit)))
+  {
+    voice.fade = END_FADE_SAMPLES;
+    n = voice.note;
+  }
+
+  if (n != voice.note)
+  {
     const bool hadNote = voice.note >= 0;
+    if (ghosts && hadNote)
+    {
+      ghosts->ghostVoice = voice;
+      ghosts->ghostVoice.frozen = true;
+      ghosts->ghostVoice.fade = 0;
+      if (instrument)
+        ghosts->ghostInstrument = *instrument;
+      else
+        ghosts->ghostInstrument.stop();
+      ghosts->ghostCount = ghostSamples();
+    }
+
     SoundSample previous = {0};
     if (hadNote)
     {
@@ -438,19 +492,28 @@ float APU::renderVoice(Voice& voice, channel_index_t channel, int32_t keyShift, 
 
     voice.note = n;
 
-    /* an instrument carries on through notes of the same instrument and pitch, and restarts when either changes, when the sound loops or once it has ended */
-    const SoundSample& next = sound->samples[n];
-    if (owner && next.useSfx())
+    const SoundSample& upcoming = sound->samples[n];
+    if (hadNote && !previous.useSfx() && !upcoming.useSfx() && previous.waveform() != Waveform::NOISE &&
+        previous.volume() > 0)
     {
-      const sound_index_t instrument = sound_index_t(next.waveform());
-      const bool carries = hadNote && !looped && previous.useSfx() && previous.waveform() == next.waveform() && previous.pitch() == next.pitch();
-      if (!carries || !owner->instrument.active() || owner->instrument.index != instrument)
-        owner->instrument.start(instrument, 0, -1);
+      voice.crossfade = crossfadeSamples();
+      voice.crossfadeWave = uint8_t(previous.waveform());
+      voice.crossfadeVolume = voice.volume;
+    }
+
+    /* measured on PICO-8: each note restarts its instrument unless it slides on from the same one */
+    const SoundSample& next = sound->samples[n];
+    if (instrument && next.useSfx())
+    {
+      const sound_index_t sfx = sound_index_t(next.waveform());
+      const bool carries = hadNote && !looped && next.effect() == Effect::SLIDE && previous.useSfx() && previous.waveform() == next.waveform();
+      if (!carries || !instrument->active() || instrument->index != sfx)
+        instrument->start(sfx, 0, -1);
     }
   }
 
   const SoundSample note = sound->samples[n];
-  const float t = float(voice.offset - n);
+  const float t = std::min(float(voice.offset - n), 0.999f);
   const int32_t key = note.pitch() + keyShift;
   const float base = keyHz(key);
   float frequency = base;
@@ -475,7 +538,9 @@ float APU::renderVoice(Voice& voice, channel_index_t channel, int32_t keyShift, 
     break;
   }
   case Effect::DROP:
-    frequency *= 1.0f - t;
+    /* measured on PICO-8: a note that plays an sfx instrument keeps its pitch through a drop */
+    if (!(instrument && note.useSfx()))
+      frequency *= 1.0f - t;
     break;
   case Effect::FADE_IN:
     volume *= t;
@@ -505,10 +570,40 @@ float APU::renderVoice(Voice& voice, channel_index_t channel, int32_t keyShift, 
   voice.volume += (volume - voice.volume) * 0.04f;
 
   float out;
-  if (owner && note.useSfx())
-    out = renderVoice(owner->instrument, channel, key - 24, frequency / base, voice.volume, nullptr);
+  if (instrument && note.useSfx())
+    out = renderVoice(*instrument, channel, key - 24, frequency / base, voice.volume, nullptr, nullptr);
   else
+  {
+    const double phase = voice.phase;
     out = oscillator(voice, note.waveform(), frequency, sound) * voice.volume;
+
+    if (voice.crossfade > 0)
+    {
+      const float k = float(voice.crossfade) / float(crossfadeSamples());
+      const float before = wave(Waveform(voice.crossfadeWave), fraction(phase), phase) * voice.crossfadeVolume;
+      out = out * (1.0f - k) + before * k;
+      --voice.crossfade;
+    }
+  }
+
+  if (voice.frozen)
+  {
+    ++voice.clock;
+    return out;
+  }
+
+  if (voice.fade > 0)
+  {
+    out *= float(voice.fade) / float(END_FADE_SAMPLES);
+    if (--voice.fade == 0)
+    {
+      voice.stop();
+      if (instrument)
+        instrument->stop();
+    }
+    ++voice.clock;
+    return out;
+  }
 
   const double step = 1.0 / noteSamples(sound, channel);
   voice.offset += step;
@@ -523,7 +618,19 @@ float APU::renderChannel(Channel& c, channel_index_t index)
   if (c.voice.active())
     c.flags = memory.sound(c.voice.index)->flags;
 
-  float out = renderVoice(c.voice, index, 0, 1.0f, 1.0f, &c);
+  float out = renderVoice(c.voice, index, 0, 1.0f, 1.0f, &c.instrument, &c);
+
+  if (c.ghostCount > 0)
+  {
+    const float k = float(c.ghostCount) / float(ghostSamples());
+    const float before = renderVoice(c.ghostVoice, index, 0, 1.0f, 1.0f, &c.ghostInstrument, nullptr);
+    out = out * (1.0f - k) + before * k;
+    if (--c.ghostCount == 0)
+    {
+      c.ghostVoice.stop();
+      c.ghostInstrument.stop();
+    }
+  }
 
   Sound flags;
   flags.flags = c.flags;
@@ -616,6 +723,14 @@ void APU::renderSounds(int16_t* dest, size_t totalSamples)
     }
 
     mix = lowpass(mix);
+
+    /* four channels at once can pass full scale, and a hard clip there is what makes busy moments sound crunchy,
+       so anything above the knee bends towards full scale instead */
+    constexpr float knee = 0.6f;
+    const float level = std::fabs(mix);
+    if (level > knee)
+      mix = std::copysign(knee + (1.0f - knee) * std::tanh((level - knee) / (1.0f - knee)), mix);
+
     dest[s] = int16_t(std::max(-32767.0f, std::min(32767.0f, mix * 32767.0f)));
   }
 

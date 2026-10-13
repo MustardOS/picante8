@@ -135,15 +135,31 @@ namespace retro8
       float noiseLast = 0.0f;
       bool noiseHalf = false;
 
+      /* samples left of the fade a sound ends with, 0 while it is playing normally */
+      int32_t fade = 0;
+
+      /* the note just left, faded out over the first samples of the next so a change of waveform does not click */
+      int32_t crossfade = 0;
+      uint8_t crossfadeWave = 0;
+      float crossfadeVolume = 0.0f;
+
+      /* a copy kept on its note while it fades out under whatever replaced it */
+      bool frozen = false;
+
       bool active() const { return index >= 0; }
       void start(sound_index_t sound, int32_t first, int32_t notes);
-      void stop() { index = -1; note = -1; }
+      void stop() { index = -1; note = -1; fade = 0; }
     };
 
     struct Channel
     {
       Voice voice;
       Voice instrument;
+
+      /* what the channel played before its last sharp change, faded out over the next samples */
+      Voice ghostVoice;
+      Voice ghostInstrument;
+      int32_t ghostCount = 0;
       uint32_t started = 0;
       uint8_t flags = 0;
 
@@ -159,6 +175,8 @@ namespace retro8
       static constexpr int32_t SAMPLE_RATE = 44100;
       static constexpr int32_t SAMPLES_PER_TICK = 366;
       static constexpr size_t LOWPASS_TAPS = 127;
+      /* PICO-8 ends a sound with a short straight fade rather than cutting it, measured at 16 samples here */
+      static constexpr int32_t END_FADE_SAMPLES = 16;
 
     private:
       retro8::Memory& memory;
@@ -199,10 +217,13 @@ namespace retro8
 
       uint8_t control(int32_t offset) const;
       int32_t noteSamples(const Sound* sound, channel_index_t channel) const;
-      float renderVoice(Voice& voice, channel_index_t channel, int32_t keyShift, float pitchScale, float volumeScale, Channel* owner);
+      float renderVoice(Voice& voice, channel_index_t channel, int32_t keyShift, float pitchScale, float volumeScale, Voice* instrument, Channel* ghosts);
+      static int32_t ghostSamples();
+      static void ghostChannel(Channel& c);
       float renderChannel(Channel& channel, channel_index_t index);
       float oscillator(Voice& voice, Waveform waveform, float frequency, const Sound* sound);
       float noise(Voice& voice, float frequency, const Sound* sound);
+      static int32_t crossfadeSamples();
 
       const Voice* audible(channel_index_t channel) const;
 
