@@ -350,11 +350,22 @@ static int pal_set(int c0, int c1, palette_index_t index)
 
 int pal(lua_State* L)
 {
-  /* no arguments, reset palette */
-  if (lua_gettop(L) == 0)
+  const int args = lua_gettop(L);
+
+  if (args == 0 || lua_isnil(L, 1))
   {
     machine->memory().paletteAt(gfx::DRAW_PALETTE_INDEX)->reset();
     machine->memory().paletteAt(gfx::SCREEN_PALETTE_INDEX)->resetScreen();
+    return 0;
+  }
+
+  if (args == 1 && lua_isnumber(L, 1))
+  {
+    const int index = (int)lua_tonumber(L, 1);
+    if (index == (int)gfx::DRAW_PALETTE_INDEX)
+      machine->memory().paletteAt(gfx::DRAW_PALETTE_INDEX)->reset();
+    else if (index == (int)gfx::SCREEN_PALETTE_INDEX)
+      machine->memory().paletteAt(gfx::SCREEN_PALETTE_INDEX)->resetScreen();
     return 0;
   }
 
@@ -469,8 +480,8 @@ int map(lua_State* L)
   coord_t cy = lua_tonumber(L, 2);
   coord_t x = lua_tonumber(L, 3);
   coord_t y = lua_tonumber(L, 4);
-  amount_t cw = lua_gettop(L) >= 5 ? lua_tonumber(L, 5) : (gfx::SCREEN_WIDTH / gfx::SPRITE_WIDTH);
-  amount_t ch = lua_gettop(L) >= 6 ? lua_tonumber(L, 6) : (gfx::SCREEN_HEIGHT / gfx::SPRITE_HEIGHT);
+  amount_t cw = lua_gettop(L) >= 5 ? lua_tonumber(L, 5) : machine->memory().mapWidth();
+  amount_t ch = lua_gettop(L) >= 6 ? lua_tonumber(L, 6) : machine->memory().mapHeight();
   sprite_flags_t layer = 0;
 
   if (lua_gettop(L) == 7)
@@ -1120,8 +1131,8 @@ namespace platform
     return lua_isnumber(L, index) ? (int32_t)(uint32_t)(int64_t)std::floor(lua_tonumber(L, index) * 65536.0) : 0;
   }
 
-  static inline uint8_t read8(int32_t addr) { return mem()[addr & 0xffff]; }
-  static inline void write8(int32_t addr, uint8_t value) { mem()[addr & 0xffff] = value; }
+  static inline uint8_t read8(int32_t addr) { return mem()[machine->memory().dataAddress(addr)]; }
+  static inline void write8(int32_t addr, uint8_t value) { mem()[machine->memory().dataAddress(addr)] = value; }
 
   static int count_at(lua_State* L, int index)
   {
@@ -1215,10 +1226,13 @@ namespace platform
   {
     const int32_t addr = address_at(L, 1);
     const uint8_t value = (uint8_t)int_at(L, 2);
-    const int32_t length = std::min(int_at(L, 3), MEMORY_SIZE - addr);
+    const int32_t length = std::max(0, std::min(int_at(L, 3), MEMORY_SIZE));
 
-    if (length > 0)
+    if (length > 0 && machine->memory().identityMapping() && addr + length <= MEMORY_SIZE)
       std::memset(mem() + addr, value, length);
+    else
+      for (int32_t i = 0; i < length; ++i)
+        write8(addr + i, value);
 
     return 0;
   }
@@ -1227,10 +1241,19 @@ namespace platform
   {
     const int32_t dest = address_at(L, 1);
     const int32_t src = address_at(L, 2);
-    const int32_t length = std::min({int_at(L, 3), MEMORY_SIZE - dest, MEMORY_SIZE - src});
+    const int32_t length = std::max(0, std::min(int_at(L, 3), MEMORY_SIZE));
 
-    if (length > 0)
+    if (length > 0 && machine->memory().identityMapping() && dest + length <= MEMORY_SIZE && src + length <= MEMORY_SIZE)
       std::memmove(mem() + dest, mem() + src, length);
+    else if (length > 0)
+    {
+      static std::vector<uint8_t> copied;
+      copied.resize(length);
+      for (int32_t i = 0; i < length; ++i)
+        copied[i] = read8(src + i);
+      for (int32_t i = 0; i < length; ++i)
+        write8(dest + i, copied[i]);
+    }
 
     return 0;
   }
@@ -1265,8 +1288,7 @@ namespace platform
 
   int btn(lua_State* L)
   {
-    index_t index = lua_isnumber(L, 2) ? lua_tonumber(L, 2) : 0;
-    if (index >= PLAYER_COUNT) index = 0;
+    const index_t index = lua_isnumber(L, 2) ? lua_tonumber(L, 2) : 0;
  
     /* we're asking for a specific button*/
     if (lua_gettop(L) >= 1)
@@ -1275,7 +1297,7 @@ namespace platform
       static constexpr std::array<bt_t, 6> buttons = { bt_t::LEFT, bt_t::RIGHT, bt_t::UP, bt_t::DOWN, bt_t::ACTION1, bt_t::ACTION2 };
       const int bindex = lua_isnumber(L, 1) ? (int)lua_tonumber(L, 1) : -1;
 
-      if (bindex >= 0 && bindex < (int)buttons.size())
+      if (index < PLAYER_COUNT && bindex >= 0 && bindex < (int)buttons.size())
         lua_pushboolean(L, machine->state().buttons[index].isSet(buttons[bindex]));
       else
         lua_pushboolean(L, false);
@@ -1284,17 +1306,15 @@ namespace platform
     /* push whole bitmask*/
     else
     {
-      lua_pushnumber(L, machine->state().buttons[index].value);
+      lua_pushinteger(L, machine->state().buttons[0].value | (machine->state().buttons[1].value << 8));
     }
 
-    //TODO: finish for player 2?
     return 1;
   }
 
   int btnp(lua_State* L)
   {
-    index_t index = lua_isnumber(L, 2) ? lua_tonumber(L, 2) : 0;
-    if (index >= PLAYER_COUNT) index = 0;
+    const index_t index = lua_isnumber(L, 2) ? lua_tonumber(L, 2) : 0;
 
     /* we're asking for a specific button*/
     if (lua_gettop(L) >= 1)
@@ -1303,7 +1323,7 @@ namespace platform
       static constexpr std::array<bt_t, 6> buttons = { bt_t::LEFT, bt_t::RIGHT, bt_t::UP, bt_t::DOWN, bt_t::ACTION1, bt_t::ACTION2 };
       const int bindex = lua_isnumber(L, 1) ? (int)lua_tonumber(L, 1) : -1;
 
-      if (bindex >= 0 && bindex < (int)buttons.size())
+      if (index < PLAYER_COUNT && bindex >= 0 && bindex < (int)buttons.size())
         lua_pushboolean(L, machine->state().previousButtons[index].isSet(buttons[bindex]));
       else
         lua_pushboolean(L, false);
@@ -1311,10 +1331,9 @@ namespace platform
     /* push whole bitmask*/
     else
     {
-      lua_pushnumber(L, machine->state().previousButtons[index].value);
+      lua_pushinteger(L, machine->state().previousButtons[0].value | (machine->state().previousButtons[1].value << 8));
     }
 
-    //TODO: finish for player?
     return 1;
   }
 
@@ -1387,7 +1406,7 @@ namespace platform
     case 24: case 54: lua_pushinteger(L, music_pattern()); break;
     case 26: case 56: lua_pushinteger(L, music_ticks()); break;
     case 57: lua_pushboolean(L, music_pattern() >= 0); break;
-    case 30: case 110: lua_pushboolean(L, 0); break;
+    case 28: case 30: case 110: case 120: case 121: lua_pushboolean(L, 0); break;
     case 100: if (lua::cartBreadcrumb.empty()) lua_pushnil(L); else lua_pushstring(L, lua::cartBreadcrumb.c_str()); break;
     case 101: lua_pushnil(L); break;
     default: lua_pushinteger(L, 0); break;

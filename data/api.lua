@@ -302,13 +302,14 @@ end
 _ENV["?"] = print
 
 function reset()
+  memset(0x5f00, 0, 0x80)
   pal()
-  palt()
-  camera()
   clip()
   color(6)
-  fillp()
   cursor(0, 0)
+  poke(0x5f54, 0, 0x60, 0x20, 0x80)
+  line()
+  tline(13)
 end
 
 local rawpairs = pairs

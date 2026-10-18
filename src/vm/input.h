@@ -40,12 +40,14 @@ namespace retro8
 
     inline void InputManager::reset()
     {
+      _frameCounter = 0;
       for (auto& pks : keyStatus)
       {
         for (uint32_t i = 0; i < pks.size(); ++i)
         {
           pks[i].button = retro8::button_t(1 << i);
           pks[i].state = KeyStatus::State::OFF;
+          pks[i].ticks = 0;
         }
       }
     }

@@ -81,13 +81,38 @@ namespace retro8
 
     address_t mapped(address_t reg) const
     {
-      const address_t base = address_t(memory[reg]) << 8;
+      uint8_t page = memory[reg];
+      if (reg == address::MAP_MAPPING && page >= 0x30 && page <= 0x3f)
+        page -= 0x20;
+      const address_t base = address_t(page) << 8;
       return base > 0xe000 ? 0xe000 : base;
+    }
+
+    address_t dataAddress(address_t addr) const
+    {
+      addr &= 0xffff;
+      if (addr < 0x2000)
+        return mapped(address::GFX_MAPPING) + addr;
+      if (addr >= 0x6000 && addr < 0x8000)
+        return mapped(address::SCREEN_MAPPING) + addr - 0x6000;
+      return addr;
+    }
+
+    bool identityMapping() const
+    {
+      return memory[address::GFX_MAPPING] == 0 && memory[address::SCREEN_MAPPING] == 0x60;
     }
 
     int32_t mapWidth() const { return memory[address::MAP_WIDTH] ? memory[address::MAP_WIDTH] : 256; }
     bool legacyMap() const { return memory[address::MAP_MAPPING] == 0x20 && mapWidth() == 128; }
-    int32_t mapHeight() const { return legacyMap() ? 64 : int32_t((0x10000 - mapped(address::MAP_MAPPING)) / mapWidth()); }
+    int32_t mapHeight() const
+    {
+      if (legacyMap())
+        return 64;
+      const address_t base = mapped(address::MAP_MAPPING);
+      const address_t end = base >= 0x8000 ? 0x10000 : 0x3000;
+      return base < end ? int32_t((end - base) / mapWidth()) : 0;
+    }
     bool inMap(coord_t x, coord_t y) const { return x >= 0 && y >= 0 && x < mapWidth() && y < mapHeight(); }
 
     void backupCartridge()
@@ -129,7 +154,7 @@ namespace retro8
 
       if (!legacyMap())
         addr = as<sprite_index_t>(mapped(address::MAP_MAPPING) + y * mapWidth() + x);
-      else if (y >= ROWS_PER_TILE_MAP_HALF)
+      else if (y >= static_cast<coord_t>(ROWS_PER_TILE_MAP_HALF))
         addr = as<sprite_index_t>(address::TILE_MAP_LOW) + x + (y - ROWS_PER_TILE_MAP_HALF) * gfx::TILE_MAP_WIDTH * sizeof(sprite_index_t);
       else
         addr = as<sprite_index_t>(address::TILE_MAP_HIGH) + x + y * gfx::TILE_MAP_WIDTH * sizeof(sprite_index_t);

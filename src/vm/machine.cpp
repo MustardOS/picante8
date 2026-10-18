@@ -192,6 +192,9 @@ void Machine::circHelper(coord_t xc, coord_t yc, coord_t x, coord_t y, color_t c
 
 void Machine::circ(coord_t xc, coord_t yc, amount_t r, color_t color)
 {
+  if (r < 0)
+    return;
+
   //TODO: not identical to pico-8 but acceptable for now
   coord_t x = 0, y = r;
   float d = 3 - 2 * r;
@@ -385,8 +388,6 @@ coord_t Machine::print(const std::string& string, coord_t x, coord_t y, color_t 
     { { 0x8b }, 11 }, { { 0x91, }, 17 }, { { 0x94 }, 20 }, { { 0x83 }, 3 }, { { 0x8e }, 14 }, { { 0x97 }, 23 } 
   } };
 
-  static const std::array<uint8_t, 2> Prefixes = { 0xe2, 0xf0 };
-
   /* P8SCII control code arguments are one character, 0-9 then a-z for 10-35 */
   auto argument = [&string](size_t at) -> int {
     if (at >= string.length()) return 0;
@@ -532,9 +533,9 @@ void Machine::map(coord_t cx, coord_t cy, coord_t x, coord_t y, amount_t cw, amo
 
       const sprite_index_t index = *_memory.spriteInTileMap(mx, my);
 
-      /* don't draw if index is 0 or layer is not zero and sprite flags are not correcly masked to it */
       /* TODO: experimentally the behavior is layer & flags != 0 instead that layer & flags == layer */
-      if (index != 0 && (!layer || (layer & *_memory.spriteFlagsFor(index)) != 0))
+      if ((index != 0 || (_memory.base()[address::DRAW_FLAGS] & 0x08)) &&
+          (!layer || (layer & *_memory.spriteFlagsFor(index)) != 0))
         spr(index, x + tx * gfx::SPRITE_WIDTH, y + ty * gfx::SPRITE_HEIGHT);
     }
   }
@@ -629,4 +630,3 @@ bool Machine::loadState(const uint8_t* data, size_t size)
 #endif
   return true;
 }
-

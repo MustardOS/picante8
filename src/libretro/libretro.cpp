@@ -144,6 +144,7 @@ struct RetroArchEnv
 
   uint32_t frameCounter;
   uint16_t buttonState;
+  bool buttonStates[retro8::PLAYER_COUNT][retro8::BUTTON_COUNT] = {};
   bool isRGB32;
 };
 
@@ -317,6 +318,7 @@ extern "C"
     if (info && info->data)
     {
       input.reset();
+      std::memset(env.buttonStates, 0, sizeof(env.buttonStates));
 
       const char* bdata = static_cast<const char*>(info->data);
 
@@ -424,9 +426,28 @@ extern "C"
 
   void retro_run()
   {
+    env.inputPoll();
+    const static int16_t mapping[retro8::BUTTON_COUNT] = {
+      RETRO_DEVICE_ID_JOYPAD_LEFT,
+      RETRO_DEVICE_ID_JOYPAD_RIGHT,
+      RETRO_DEVICE_ID_JOYPAD_UP,
+      RETRO_DEVICE_ID_JOYPAD_DOWN,
+      RETRO_DEVICE_ID_JOYPAD_A,
+      RETRO_DEVICE_ID_JOYPAD_B,
+    };
+    for (unsigned player = 0; player < retro8::PLAYER_COUNT; ++player)
+      for (unsigned button = 0; button < retro8::BUTTON_COUNT; ++button)
+      {
+        const bool pressed = env.inputState(player, RETRO_DEVICE_JOYPAD, 0, mapping[button]);
+        if (env.buttonStates[player][button] != pressed)
+          input.manageKey(player, button, pressed);
+        env.buttonStates[player][button] = pressed;
+      }
+
     /* if code is at 60fps or every 2 frames (30fps) */
     if (machine->code().require60fps() || env.frameCounter % 2 == 0)
     {
+      input.manageKeyRepeat();
       /* call _update and _draw of PICO-8 code, or carry on from the last flip() */
       machine->code().frame();
       lua::cartdataFlush();
@@ -443,8 +464,6 @@ extern "C"
 	screen32->draw(data, screenPalette, mode);
       else
 	screen16->draw(data, screenPalette, mode);
-
-      input.manageKeyRepeat();
     }
 
     if (env.isRGB32)
@@ -470,35 +489,7 @@ extern "C"
     env.audioBatch(audioBuffer, SAMPLES_PER_FRAME);
 #endif
 
-    /* manage input */
-    {
-      const static int16_t mapping[retro8::BUTTON_COUNT] = {
-        RETRO_DEVICE_ID_JOYPAD_LEFT,
-        RETRO_DEVICE_ID_JOYPAD_RIGHT,
-        RETRO_DEVICE_ID_JOYPAD_UP,
-        RETRO_DEVICE_ID_JOYPAD_DOWN,
-        RETRO_DEVICE_ID_JOYPAD_A,
-        RETRO_DEVICE_ID_JOYPAD_B,
-      };
-      static bool btnState[retro8::PLAYER_COUNT][retro8::BUTTON_COUNT];
-
-      env.inputPoll();
-      for (unsigned player = 0; player < retro8::PLAYER_COUNT; player++)
-      {
-	for (unsigned r8bt = 0; r8bt < retro8::BUTTON_COUNT; r8bt++)
-	{
-	  const bool isSet = env.inputState(player, RETRO_DEVICE_JOYPAD, 0, mapping[r8bt]);
-	  const bool wasSet = btnState[player][r8bt];
-
-	  if (wasSet != isSet)
-	    input.manageKey(player, r8bt, isSet);
-
-	  btnState[player][r8bt] = isSet;
-	}
-
-	input.tick();
-      }
-    }
+    input.tick();
 
   }
 
@@ -507,4 +498,3 @@ extern "C"
 
   }
 }
-
