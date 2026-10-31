@@ -135,6 +135,24 @@ int main(int argc, char **argv) {
                     ++p;
                 }
             }
+            /* P8_MOUSE="frame:x:y:buttons,..." sets the devkit mouse from that frame on */
+            if (const char *spec = getenv("P8_MOUSE")) {
+                const char *p = spec;
+                while (*p) {
+                    int at = 0, x = 0, y = 0, buttons = 0;
+                    if (sscanf(p, "%d:%d:%d:%d", &at, &x, &y, &buttons) == 4 && i == at) {
+                        auto &mouse = machine->state().mouse;
+                        mouse.dx = x - mouse.x;
+                        mouse.dy = y - mouse.y;
+                        mouse.x = x;
+                        mouse.y = y;
+                        mouse.buttons = buttons;
+                    }
+                    p = strchr(p, ',');
+                    if (!p) break;
+                    ++p;
+                }
+            }
             machine->code().frame();
             if (const char *spec = getenv("P8_STATE")) {
                 /* P8_STATE=S:L saves after frame S and restores that state after frame L */

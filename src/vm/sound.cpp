@@ -36,37 +36,107 @@ namespace
   inline float fraction(double value) { return float(value - std::floor(value)); }
   inline float lerp(float a, float b, float t) { return a + (b - a) * t; }
 
-  /* the waveforms follow measurements of PICO-8 output, t is the position within one period */
-  float wave(Waveform waveform, float t, double phase)
+  inline float tilted(float t, float a) { return t < a ? 2.0f * t / a - 1.0f : 2.0f * (1.0f - t) / (1.0f - a) - 1.0f; }
+
+  /* the waveforms follow measurements of PICO-8 output, t is the position within one period, and the buzz shapes are
+     zepto8's, measured from PICO-8 WAV exports */
+  float wave(Waveform waveform, float t, double phase, bool buzz)
   {
     switch (waveform)
     {
     case Waveform::TRIANGLE:
-      return 0.5f * (std::fabs(4.0f * t - 2.0f) - 1.0f);
-    case Waveform::TILTED_SAW:
     {
-      constexpr float a = 0.875f;
-      return 0.5f * (t < a ? 2.0f * t / a - 1.0f : 2.0f * (1.0f - t) / (1.0f - a) - 1.0f);
+      const float out = std::fabs(4.0f * t - 2.0f) - 1.0f;
+      return 0.5f * (buzz ? 0.75f * out - 0.25f * tilted(t, 0.875f) : out);
     }
+    case Waveform::TILTED_SAW:
+      return 0.5f * tilted(t, buzz ? 0.975f : 0.875f);
     case Waveform::SAW:
-      return 0.653f * (t < 0.5f ? t : t - 1.0f);
+    {
+      const float out = t < 0.5f ? t : t - 1.0f;
+      if (!buzz)
+        return 0.653f * out;
+      return 0.653f * (0.83f * out - (std::fabs(fraction(phase / 2.0) * 2.0f - 1.0f) < 0.5f ? 0.085f : 0.0f));
+    }
     case Waveform::SQUARE:
-      return t < 0.5f ? 0.25f : -0.25f;
+      return t < (buzz ? 0.4f : 0.5f) ? 0.25f : -0.25f;
     case Waveform::PULSE:
-      return t < 1.0f / 3.0f ? 0.25f : -0.25f;
+      return t < (buzz ? 0.255f : 1.0f / 3.0f) ? 0.25f : -0.25f;
     case Waveform::ORGAN:
-      return (t < 0.5f ? 3.0f - std::fabs(24.0f * t - 6.0f) : 1.0f - std::fabs(16.0f * t - 12.0f)) / 9.0f;
+    {
+      float out = t < 0.5f ? 3.0f - std::fabs(24.0f * t - 6.0f) : 1.0f - std::fabs(16.0f * t - 12.0f);
+      if (buzz)
+      {
+        if (t < 0.5f)
+          out = out * 2.0f + 3.0f;
+        out = t < 0.5f && out > -1.875f ? out * 0.2f - 1.0f : out + 0.5f;
+      }
+      return out / 9.0f;
+    }
     case Waveform::PHASER:
     {
       /* two triangles drift against each other at 1/128 of the note frequency */
       const float k = std::fabs(2.0f * fraction(phase / 128.0) - 1.0f);
       const float u = fraction(t + 0.5f * k);
-      return (std::fabs(4.0f * u - 2.0f) - std::fabs(4.0f * t - 2.0f)) / 6.0f;
+      float out = std::fabs(4.0f * u - 2.0f) - std::fabs(4.0f * t - 2.0f);
+      if (buzz)
+        out += 0.25f - std::fabs(fraction(phase * 2.0 + 0.5) - 0.5f) + 0.125f - std::fabs(0.5f * fraction(phase * 4.0) - 0.25f);
+      return out / 6.0f;
     }
     default:
       return 0.0f;
     }
   }
+
+  /* the second wave detune adds, as a multiple of the note frequency, from zepto8's measurements */
+  float detuneRatio(Waveform waveform, int32_t detune)
+  {
+    switch (waveform)
+    {
+    case Waveform::TRIANGLE:
+      return detune == 1 ? 3.0f / 4.0f : 3.0f / 2.0f;
+    case Waveform::ORGAN:
+      return detune == 1 ? 200.0f / 199.0f : 800.0f / 199.0f;
+    case Waveform::PHASER:
+      return detune == 1 ? 49.0f / 50.0f : 400.0f / 199.0f;
+    default:
+      return detune == 1 ? 200.0f / 199.0f : 400.0f / 199.0f;
+    }
+  }
+
+  /* dampen is a high shelf, zepto8's 2400 Hz at -6 dB for level 1 and 1000 Hz at -12 dB for level 2 (audio EQ cookbook) */
+  struct ShelfCoefficients
+  {
+    float b0, b1, b2, a1, a2;
+
+    ShelfCoefficients(float frequency, float gain)
+    {
+      const float w0 = 2.0f * float(M_PI) * frequency / APU::SAMPLE_RATE;
+      const float cosw0 = std::cos(w0);
+      const float a = std::pow(10.0f, gain / 40.0f);
+      const float alpha = std::sin(w0) / 2.0f * std::sqrt(2.0f);
+      const float sqra = 2.0f * std::sqrt(a) * alpha;
+      const float a0 = (a + 1.0f) - (a - 1.0f) * cosw0 + sqra;
+      b0 = a * ((a + 1.0f) + (a - 1.0f) * cosw0 + sqra) / a0;
+      b1 = -2.0f * a * ((a - 1.0f) + (a + 1.0f) * cosw0) / a0;
+      b2 = a * ((a + 1.0f) + (a - 1.0f) * cosw0 - sqra) / a0;
+      a1 = 2.0f * ((a - 1.0f) - (a + 1.0f) * cosw0) / a0;
+      a2 = ((a + 1.0f) - (a - 1.0f) * cosw0 - sqra) / a0;
+    }
+
+    float run(Shelf& s, float in) const
+    {
+      const float out = b0 * in + b1 * s.x1 + b2 * s.x2 - a1 * s.y1 - a2 * s.y2;
+      s.x2 = s.x1;
+      s.x1 = in;
+      s.y2 = s.y1;
+      s.y1 = out;
+      return out;
+    }
+  };
+
+  const ShelfCoefficients dampLight(2400.0f, -6.0f);
+  const ShelfCoefficients dampStrong(1000.0f, -12.0f);
 }
 
 void Voice::start(sound_index_t sound, int32_t first, int32_t notes)
@@ -409,17 +479,17 @@ float APU::oscillator(Voice& voice, Waveform waveform, float frequency, const So
     out = noise(voice, frequency, sound);
   else
   {
-    out = wave(waveform, fraction(voice.phase), voice.phase);
+    const bool buzz = sound->buzz();
+    out = wave(waveform, fraction(voice.phase), voice.phase, buzz);
 
     const int32_t detune = sound->detune();
     if (detune)
     {
-      out = 0.5f * (out + wave(waveform, fraction(voice.detunePhase), voice.detunePhase));
-      voice.detunePhase += frequency * (detune == 1 ? 1.006f : 2.0f) / SAMPLE_RATE;
+      /* organ's second wave two octaves up is a plain triangle */
+      const Waveform second = detune == 2 && waveform == Waveform::ORGAN ? Waveform::TRIANGLE : waveform;
+      out += 0.5f * wave(second, fraction(voice.detunePhase), voice.detunePhase, buzz);
+      voice.detunePhase += frequency * detuneRatio(waveform, detune) / SAMPLE_RATE;
     }
-
-    if (sound->buzz())
-      out = 0.75f * out + (fraction(voice.phase) < 0.25f ? 0.0625f : -0.0625f);
   }
 
   voice.phase += double(frequency) / SAMPLE_RATE;
@@ -580,7 +650,7 @@ float APU::renderVoice(Voice& voice, channel_index_t channel, int32_t keyShift, 
     if (voice.crossfade > 0)
     {
       const float k = float(voice.crossfade) / float(crossfadeSamples());
-      const float before = wave(Waveform(voice.crossfadeWave), fraction(phase), phase) * voice.crossfadeVolume;
+      const float before = wave(Waveform(voice.crossfadeWave), fraction(phase), phase, sound->buzz()) * voice.crossfadeVolume;
       out = out * (1.0f - k) + before * k;
       --voice.crossfade;
     }
@@ -636,24 +706,13 @@ float APU::renderChannel(Channel& c, channel_index_t index)
   flags.flags = c.flags;
   const uint8_t bit = 1 << index, strong = 0x10 << index;
 
-  int32_t dampen = flags.dampen();
-  if (control(3) & bit) dampen = std::max(dampen, 1);
-  if (control(3) & strong) dampen = 2;
-  if (dampen)
-  {
-    c.damped += (out - c.damped) * (dampen == 1 ? 0.5f : 0.25f);
-    out = c.damped;
-  }
-
-  if (control(2) & bit)
-    out = std::max(-0.25f, std::min(0.25f, out * 3.0f));
-
+  /* reverb echoes the channel two or four ticks later, as zepto8 measured */
   int32_t reverb = flags.reverb();
   if (control(1) & bit) reverb = std::max(reverb, 1);
   if (control(1) & strong) reverb = 2;
   if (reverb)
   {
-    const size_t delay = reverb == 1 ? 1464 : 2928;
+    const size_t delay = reverb == 1 ? 2 * SAMPLES_PER_TICK : 4 * SAMPLES_PER_TICK;
     const float echoed = c.echo[(c.echoAt + c.echo.size() - delay) % c.echo.size()];
     out += echoed * 0.5f;
     c.echo[c.echoAt] = out;
@@ -661,6 +720,20 @@ float APU::renderChannel(Channel& c, channel_index_t index)
   else
     c.echo[c.echoAt] = 0.0f;
   c.echoAt = (c.echoAt + 1) % c.echo.size();
+
+  /* both shelves run all the time so switching dampen on mid sound starts from a settled state */
+  int32_t dampen = flags.dampen();
+  if (control(3) & bit) dampen = std::max(dampen, 1);
+  if (control(3) & strong) dampen = 2;
+  const float light = dampLight.run(c.dampLight, out);
+  const float strongOut = dampStrong.run(c.dampStrong, out);
+  if (dampen == 1)
+    out = light;
+  else if (dampen == 2)
+    out = strongOut;
+
+  if (control(2) & bit)
+    out = std::max(-0.25f, std::min(0.25f, out * 3.0f));
 
   return out;
 }

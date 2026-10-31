@@ -15,6 +15,9 @@
 #include <string>
 #include <cstdarg>
 #include <cstring>
+#include <cstdlib>
+#include <cmath>
+#include <algorithm>
 
 #define LIBRETRO_LOG(x, ...) env.logger(retro_log_level::RETRO_LOG_INFO, x # __VA_ARGS__)
 
@@ -33,6 +36,7 @@ class Screen {
 public:
   ~Screen() {
     delete[] buffer;
+    delete[] overlay;
   }
 
   /* 0x5f2c: 1 to 3 stretch the left or top half, 5 to 7 mirror it, 129 to 131 flip, 133 to 135 rotate by 90, 180 and 270 */
@@ -79,14 +83,29 @@ public:
   const pixel_t *getBuffer() {
     return buffer;
   }
+
+  /* the frame with an arrow on top, kept apart from the buffer because a 30 fps cart leaves the buffer up for two frames */
+  const pixel_t *getBufferWithCursor(int x, int y) {
+    static const char* const arrow[] = { "b", "bb", "bwb", "bwwb", "bwwwb", "bwbbb", "bb" };
+    std::memcpy(overlay, buffer, sizeof(pixel_t) * r8::gfx::SCREEN_WIDTH * r8::gfx::SCREEN_HEIGHT);
+    for (int row = 0; row < 7; ++row)
+      for (int column = 0; arrow[row][column]; ++column) {
+        const int px = x + column, py = y + row;
+        if (px < 0 || py < 0 || px >= int(r8::gfx::SCREEN_WIDTH) || py >= int(r8::gfx::SCREEN_HEIGHT))
+          continue;
+        overlay[py * r8::gfx::SCREEN_WIDTH + px] = colorTable.get(arrow[row][column] == 'w' ? 7 : 0);
+      }
+    return overlay;
+  }
 protected:
-  Screen(): buffer(new pixel_t[r8::gfx::SCREEN_WIDTH * r8::gfx::SCREEN_HEIGHT]) {
+  Screen(): buffer(new pixel_t[r8::gfx::SCREEN_WIDTH * r8::gfx::SCREEN_HEIGHT]), overlay(new pixel_t[r8::gfx::SCREEN_WIDTH * r8::gfx::SCREEN_HEIGHT]) {
   }
 
 protected:
   r8::gfx::ColorTable colorTable;
 private:
   pixel_t *buffer;
+  pixel_t *overlay;
 };
 
 struct Screen32 : Screen<uint32_t> {
@@ -150,6 +169,258 @@ struct RetroArchEnv
 
 RetroArchEnv env;
 
+/* Carts that poke(0x5f2d, 1) read a mouse through stat(32) onwards. A real mouse or pointer from the frontend drives it, so
+   does a stick, and holding Y turns the d-pad into the cursor for devices without sticks. L1 and R1 are the left and right
+   clicks and either L2 or R2 the middle one. Nothing changes for a cart that never turns the mouse on. */
+namespace mouse
+{
+  enum class Source { AUTO, RIGHT, LEFT, DPAD, OFF };
+
+  struct Options
+  {
+    Source source = Source::AUTO;
+    float speed = 128.0f;
+    float deadzone = 0.2f;
+    unsigned hold = RETRO_DEVICE_ID_JOYPAD_Y;
+    bool cursor = false;
+  };
+
+  struct Cursor
+  {
+    float x = 64.0f, y = 64.0f;
+    float movedX = 0.0f, movedY = 0.0f;
+    int32_t wheel = 0;
+    uint8_t buttons = 0;
+    bool holding = false;
+    int32_t dpadFrames = 0;
+    bool announced = false;
+  };
+
+  Options options;
+  Cursor cursor;
+
+  static const retro_core_option_definition definitions[] = {
+    { "picante8_mouse_source", "Mouse Control",
+      "What moves the mouse for carts that use one. Auto takes either stick and also lets the hold button turn the D-Pad into the cursor.",
+      { { "auto", "Auto" }, { "right", "Right Stick" }, { "left", "Left Stick" }, { "dpad", "D-Pad Hold" }, { "off", "Disabled" }, { NULL, NULL } },
+      "auto" },
+    { "picante8_mouse_speed", "Mouse Speed", "How far the cursor travels in a second with the stick pushed all the way.",
+      { { "64", "Slow" }, { "128", "Normal" }, { "192", "Fast" }, { "256", "Very Fast" }, { NULL, NULL } },
+      "128" },
+    { "picante8_mouse_deadzone", "Mouse Stick Deadzone", "How far a stick moves before the cursor follows it.",
+      { { "10", "10%" }, { "15", "15%" }, { "20", "20%" }, { "25", "25%" }, { "30", "30%" }, { NULL, NULL } },
+      "20" },
+    { "picante8_mouse_hold", "Mouse Hold Button",
+      "While held, the D-Pad moves the cursor and O and X also click left and right.",
+      { { "y", "Y" }, { "select", "Select" }, { NULL, NULL } },
+      "y" },
+    { "picante8_mouse_cursor", "Mouse Cursor",
+      "Draws an arrow at the mouse for carts that do not draw their own.",
+      { { "off", "Disabled" }, { "on", "Enabled" }, { NULL, NULL } },
+      "off" },
+    { NULL, NULL, NULL, { { NULL, NULL } }, NULL },
+  };
+
+  static const retro_variable legacy[] = {
+    { "picante8_mouse_source", "Mouse Control; auto|right|left|dpad|off" },
+    { "picante8_mouse_speed", "Mouse Speed; 128|192|256|64" },
+    { "picante8_mouse_deadzone", "Mouse Stick Deadzone; 20|25|30|10|15" },
+    { "picante8_mouse_hold", "Mouse Hold Button; y|select" },
+    { "picante8_mouse_cursor", "Mouse Cursor; off|on" },
+    { NULL, NULL },
+  };
+
+  static const char* value(const char* key)
+  {
+    retro_variable variable = { key, nullptr };
+    return env.retro_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &variable) && variable.value ? variable.value : "";
+  }
+
+  void readOptions()
+  {
+    const std::string source = value("picante8_mouse_source");
+    options.source = source == "right" ? Source::RIGHT : source == "left" ? Source::LEFT : source == "dpad" ? Source::DPAD
+                   : source == "off" ? Source::OFF : Source::AUTO;
+
+    const int speed = std::atoi(value("picante8_mouse_speed"));
+    options.speed = speed > 0 ? float(speed) : 128.0f;
+
+    const int deadzone = std::atoi(value("picante8_mouse_deadzone"));
+    options.deadzone = deadzone > 0 && deadzone < 100 ? deadzone / 100.0f : 0.2f;
+
+    const std::string hold = value("picante8_mouse_hold");
+    options.hold = hold == "select" ? RETRO_DEVICE_ID_JOYPAD_SELECT : RETRO_DEVICE_ID_JOYPAD_Y;
+
+    options.cursor = std::string(value("picante8_mouse_cursor")) == "on";
+  }
+
+  void reset()
+  {
+    cursor = Cursor();
+  }
+
+  bool enabled()
+  {
+    return machine && (machine->memory().base()[0x5f2d] & 1) && options.source != Source::OFF;
+  }
+
+  bool holding()
+  {
+    return cursor.holding;
+  }
+
+  /* the stick's push past the deadzone, squared so small pushes stay precise */
+  static bool stick(unsigned index, float& vx, float& vy)
+  {
+    const float x = env.inputState(0, RETRO_DEVICE_ANALOG, index, RETRO_DEVICE_ID_ANALOG_X) / 32768.0f;
+    const float y = env.inputState(0, RETRO_DEVICE_ANALOG, index, RETRO_DEVICE_ID_ANALOG_Y) / 32768.0f;
+    const float length = std::sqrt(x * x + y * y);
+    if (length <= options.deadzone)
+      return false;
+
+    const float push = std::min(1.0f, (length - options.deadzone) / (1.0f - options.deadzone));
+    const float scale = push * push * options.speed / 60.0f / length;
+    vx = x * scale;
+    vy = y * scale;
+    return true;
+  }
+
+  static void announce()
+  {
+    if (cursor.announced)
+      return;
+    cursor.announced = true;
+
+    const char* hold = options.hold == RETRO_DEVICE_ID_JOYPAD_SELECT ? "Select" : "Y";
+    static char text[160];
+    switch (options.source)
+    {
+    case Source::RIGHT: snprintf(text, sizeof(text), "Mouse: Right Stick moves, L1 clicks, R1 right clicks"); break;
+    case Source::LEFT: snprintf(text, sizeof(text), "Mouse: Left Stick moves, L1 clicks, R1 right clicks"); break;
+    case Source::DPAD: snprintf(text, sizeof(text), "Mouse: hold %s and use the D-Pad, L1 clicks, R1 right clicks", hold); break;
+    default: snprintf(text, sizeof(text), "Mouse: a stick or %s with the D-Pad moves, L1 clicks, R1 right clicks", hold); break;
+    }
+
+    retro_message message = { text, 240 };
+    env.retro_cb(RETRO_ENVIRONMENT_SET_MESSAGE, &message);
+  }
+
+  /* runs every 60 Hz frame before the buttons are read */
+  void update()
+  {
+    if (!enabled())
+    {
+      cursor.holding = false;
+      cursor.buttons = 0;
+      return;
+    }
+
+    announce();
+
+    const auto pad = [](unsigned id) { return env.inputState(0, RETRO_DEVICE_JOYPAD, 0, id) != 0; };
+
+    float vx = 0.0f, vy = 0.0f;
+    const bool sticks = options.source == Source::AUTO || options.source == Source::RIGHT || options.source == Source::LEFT;
+    if (options.source == Source::RIGHT || options.source == Source::AUTO)
+      stick(RETRO_DEVICE_INDEX_ANALOG_RIGHT, vx, vy);
+    if ((options.source == Source::LEFT || options.source == Source::AUTO) && vx == 0.0f && vy == 0.0f)
+      stick(RETRO_DEVICE_INDEX_ANALOG_LEFT, vx, vy);
+
+    uint8_t buttons = 0;
+    cursor.holding = (options.source == Source::AUTO || options.source == Source::DPAD) && pad(options.hold);
+    if (cursor.holding)
+    {
+      const int dx = pad(RETRO_DEVICE_ID_JOYPAD_RIGHT) - pad(RETRO_DEVICE_ID_JOYPAD_LEFT);
+      const int dy = pad(RETRO_DEVICE_ID_JOYPAD_DOWN) - pad(RETRO_DEVICE_ID_JOYPAD_UP);
+      if (dx || dy)
+      {
+        /* a single tap moves one pixel, holding speeds up to the stick's full speed over half a second */
+        const float step = cursor.dpadFrames == 0 ? 1.0f : std::min(options.speed / 60.0f, 0.5f + cursor.dpadFrames * options.speed / 1800.0f);
+        if (cursor.dpadFrames == 0 || cursor.dpadFrames > 8)
+        {
+          vx += dx * step;
+          vy += dy * step;
+        }
+        ++cursor.dpadFrames;
+      }
+      else
+        cursor.dpadFrames = 0;
+
+      if (pad(RETRO_DEVICE_ID_JOYPAD_A)) buttons |= 1;
+      if (pad(RETRO_DEVICE_ID_JOYPAD_B)) buttons |= 2;
+    }
+    else
+      cursor.dpadFrames = 0;
+
+    if (sticks || options.source == Source::DPAD)
+    {
+      if (pad(RETRO_DEVICE_ID_JOYPAD_L)) buttons |= 1;
+      if (pad(RETRO_DEVICE_ID_JOYPAD_R)) buttons |= 2;
+      if (pad(RETRO_DEVICE_ID_JOYPAD_L2) || pad(RETRO_DEVICE_ID_JOYPAD_R2)) buttons |= 4;
+    }
+
+    /* a real mouse moves in its own pixels, halved so a desktop mouse does not race across 128 */
+    vx += env.inputState(0, RETRO_DEVICE_MOUSE, 0, RETRO_DEVICE_ID_MOUSE_X) * 0.5f;
+    vy += env.inputState(0, RETRO_DEVICE_MOUSE, 0, RETRO_DEVICE_ID_MOUSE_Y) * 0.5f;
+    if (env.inputState(0, RETRO_DEVICE_MOUSE, 0, RETRO_DEVICE_ID_MOUSE_LEFT)) buttons |= 1;
+    if (env.inputState(0, RETRO_DEVICE_MOUSE, 0, RETRO_DEVICE_ID_MOUSE_RIGHT)) buttons |= 2;
+    if (env.inputState(0, RETRO_DEVICE_MOUSE, 0, RETRO_DEVICE_ID_MOUSE_MIDDLE)) buttons |= 4;
+    if (env.inputState(0, RETRO_DEVICE_MOUSE, 0, RETRO_DEVICE_ID_MOUSE_WHEELUP)) ++cursor.wheel;
+    if (env.inputState(0, RETRO_DEVICE_MOUSE, 0, RETRO_DEVICE_ID_MOUSE_WHEELDOWN)) --cursor.wheel;
+
+    /* a touch screen places the cursor where it is pressed, and only then, since an idle pointer reads as the centre */
+    if (env.inputState(0, RETRO_DEVICE_POINTER, 0, RETRO_DEVICE_ID_POINTER_PRESSED))
+    {
+      const float px = (env.inputState(0, RETRO_DEVICE_POINTER, 0, RETRO_DEVICE_ID_POINTER_X) + 32768) * 128.0f / 65536.0f;
+      const float py = (env.inputState(0, RETRO_DEVICE_POINTER, 0, RETRO_DEVICE_ID_POINTER_Y) + 32768) * 128.0f / 65536.0f;
+      vx += px - cursor.x;
+      vy += py - cursor.y;
+      buttons |= 1;
+    }
+
+    cursor.x = std::min(127.0f, std::max(0.0f, cursor.x + vx));
+    cursor.y = std::min(127.0f, std::max(0.0f, cursor.y + vy));
+    cursor.movedX += vx;
+    cursor.movedY += vy;
+    cursor.buttons = buttons;
+
+    auto& state = machine->state().mouse;
+    state.x = int32_t(cursor.x);
+    state.y = int32_t(cursor.y);
+    state.buttons = cursor.buttons;
+    state.wheel = cursor.wheel;
+    state.dx = int32_t(cursor.movedX);
+    state.dy = int32_t(cursor.movedY);
+  }
+
+  /* called once the cart has run a frame, so movement and the wheel count again from there */
+  void consumed()
+  {
+    cursor.movedX -= int32_t(cursor.movedX);
+    cursor.movedY -= int32_t(cursor.movedY);
+    cursor.wheel = 0;
+    if (machine)
+    {
+      machine->state().mouse.wheel = 0;
+      machine->state().mouse.dx = 0;
+      machine->state().mouse.dy = 0;
+    }
+  }
+
+  /* 0x5f2d bit 1 makes the left and right buttons press O and X */
+  bool pressesButton(unsigned button)
+  {
+    if (!enabled() || !(machine->memory().base()[0x5f2d] & 2))
+      return false;
+    return (button == 4 && (cursor.buttons & 1)) || (button == 5 && (cursor.buttons & 2));
+  }
+
+  bool drawCursor()
+  {
+    return options.cursor && enabled();
+  }
+}
+
 //TODO
 uint32_t Platform::getTicks() { return 0; }
 
@@ -186,6 +457,13 @@ static struct retro_input_descriptor input_desc[] = {
     { 1, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_UP,    "Up" },
     { 1, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_A,     "O" },
     { 1, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_B,     "X" },
+    { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_Y,     "Mouse D-Pad Hold" },
+    { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_L,     "Mouse Left Click" },
+    { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_R,     "Mouse Right Click" },
+    { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_L2,    "Mouse Middle Click" },
+    { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_R2,    "Mouse Middle Click" },
+    { 0, RETRO_DEVICE_ANALOG, RETRO_DEVICE_INDEX_ANALOG_RIGHT, RETRO_DEVICE_ID_ANALOG_X, "Mouse X" },
+    { 0, RETRO_DEVICE_ANALOG, RETRO_DEVICE_INDEX_ANALOG_RIGHT, RETRO_DEVICE_ID_ANALOG_Y, "Mouse Y" },
 
     { 0 },
 };
@@ -243,6 +521,12 @@ extern "C"
       env.logger = logger.log;
 
     e(RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS, input_desc);
+
+    unsigned version = 0;
+    if (e(RETRO_ENVIRONMENT_GET_CORE_OPTIONS_VERSION, &version) && version >= 1)
+      e(RETRO_ENVIRONMENT_SET_CORE_OPTIONS, (void*)mouse::definitions);
+    else
+      e(RETRO_ENVIRONMENT_SET_VARIABLES, (void*)mouse::legacy);
   }
 
   void retro_set_video_refresh(retro_video_refresh_t callback) { env.video = callback; }
@@ -306,6 +590,8 @@ extern "C"
     machine->font().load();
     machine->code().loadAPI();
     input.setMachine(machine);
+    mouse::reset();
+    mouse::readOptions();
 
     const char* saveDirectory = nullptr;
     lua::cartdataDirectory.clear();
@@ -427,6 +713,12 @@ extern "C"
   void retro_run()
   {
     env.inputPoll();
+
+    bool updated = false;
+    if (env.retro_cb(RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE, &updated) && updated)
+      mouse::readOptions();
+    mouse::update();
+
     const static int16_t mapping[retro8::BUTTON_COUNT] = {
       RETRO_DEVICE_ID_JOYPAD_LEFT,
       RETRO_DEVICE_ID_JOYPAD_RIGHT,
@@ -438,7 +730,10 @@ extern "C"
     for (unsigned player = 0; player < retro8::PLAYER_COUNT; ++player)
       for (unsigned button = 0; button < retro8::BUTTON_COUNT; ++button)
       {
-        const bool pressed = env.inputState(player, RETRO_DEVICE_JOYPAD, 0, mapping[button]);
+        /* while the hold button turns the d-pad into the cursor, the d-pad and O and X stop reaching the cart */
+        bool pressed = env.inputState(player, RETRO_DEVICE_JOYPAD, 0, mapping[button]) && !(player == 0 && mouse::holding());
+        if (player == 0 && mouse::pressesButton(button))
+          pressed = true;
         if (env.buttonStates[player][button] != pressed)
           input.manageKey(player, button, pressed);
         env.buttonStates[player][button] = pressed;
@@ -450,6 +745,7 @@ extern "C"
       input.manageKeyRepeat();
       /* call _update and _draw of PICO-8 code, or carry on from the last flip() */
       machine->code().frame();
+      mouse::consumed();
       lua::cartdataFlush();
 
       if (!lua::pendingCart.empty() && r8::io::switchCart(machine))
@@ -466,10 +762,12 @@ extern "C"
 	screen16->draw(data, screenPalette, mode);
     }
 
+    const bool arrow = mouse::drawCursor();
+    const int ax = int(mouse::cursor.x), ay = int(mouse::cursor.y);
     if (env.isRGB32)
-      env.video(screen32->getBuffer(), r8::gfx::SCREEN_WIDTH, r8::gfx::SCREEN_HEIGHT, r8::gfx::SCREEN_WIDTH * sizeof(uint32_t));
+      env.video(arrow ? screen32->getBufferWithCursor(ax, ay) : screen32->getBuffer(), r8::gfx::SCREEN_WIDTH, r8::gfx::SCREEN_HEIGHT, r8::gfx::SCREEN_WIDTH * sizeof(uint32_t));
     else
-      env.video(screen16->getBuffer(), r8::gfx::SCREEN_WIDTH, r8::gfx::SCREEN_HEIGHT, r8::gfx::SCREEN_WIDTH * sizeof(uint16_t));
+      env.video(arrow ? screen16->getBufferWithCursor(ax, ay) : screen16->getBuffer(), r8::gfx::SCREEN_WIDTH, r8::gfx::SCREEN_HEIGHT, r8::gfx::SCREEN_WIDTH * sizeof(uint16_t));
     ++env.frameCounter;
 
 #if SOUND_ENABLED

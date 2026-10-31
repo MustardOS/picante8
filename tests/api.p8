@@ -38,6 +38,7 @@ ck("split nums", "(function() local t=split('1,2,a') return type(t[1])..t[2]..t[
 ck("split chars", "#split('abc','')", 3)
 ck("split no conv", "type(split('1,2',',',false)[1])", "string")
 ck("split chunk", "(function() local t=split('abcdef',2) return t[1]..t[3]..#t end)()", "abef3")
+ck("split bool sep", "(function() local t=split('0,1,0,go',true) return t[2]..t[4]..#t end)()", "1go4")
 ck("sub neg", "sub('hello',-3)", "llo")
 ck("sub range", "sub('hello',2,-2)", "ell")
 ck("sub one", "sub('hello',2,_)", "ello")

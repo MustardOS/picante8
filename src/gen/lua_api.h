@@ -101,7 +101,7 @@ const char* lua_api_string =
 "    return r\n"
 "  end\n"
 "  s = tostring(s)\n"
-"  if sep == nil then\n"
+"  if type(sep) ~= \"string\" and type(sep) ~= \"number\" then\n"
 "    sep = \",\"\n"
 "  end\n"
 "  if convert == nil then\n"

@@ -1407,6 +1407,23 @@ namespace platform
     case 26: case 56: lua_pushinteger(L, music_ticks()); break;
     case 57: lua_pushboolean(L, music_pattern() >= 0); break;
     case 28: case 30: case 110: case 120: case 121: lua_pushboolean(L, 0); break;
+    case 32: case 33: case 34: case 36: case 38: case 39:
+    {
+      const auto& mouse = machine->state().mouse;
+      int32_t value = 0;
+      if (machine->memory().base()[0x5f2d] & 1)
+        switch (n)
+        {
+        case 32: value = mouse.x; break;
+        case 33: value = mouse.y; break;
+        case 34: value = mouse.buttons; break;
+        case 36: value = mouse.wheel; break;
+        case 38: value = mouse.dx; break;
+        default: value = mouse.dy; break;
+        }
+      lua_pushinteger(L, value);
+      break;
+    }
     case 100: if (lua::cartBreadcrumb.empty()) lua_pushnil(L); else lua_pushstring(L, lua::cartBreadcrumb.c_str()); break;
     case 101: lua_pushnil(L); break;
     default: lua_pushinteger(L, 0); break;

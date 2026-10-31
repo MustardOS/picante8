@@ -19,6 +19,16 @@ namespace retro8
     point_t lastLineEnd;
     std::array<bit_mask<button_t>, PLAYER_COUNT> buttons;
     std::array<bit_mask<button_t>, PLAYER_COUNT> previousButtons;
+
+    /* the devkit mouse the frontend fills while 0x5f2d bit 0 is set: the position, the buttons packed as stat(34) gives them,
+       and the wheel and movement gathered since the cart last ran a frame */
+    struct Mouse
+    {
+      int32_t x = 64, y = 64;
+      uint8_t buttons = 0;
+      int32_t wheel = 0;
+      int32_t dx = 0, dy = 0;
+    } mouse;
   };
 
   class Machine

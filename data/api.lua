@@ -100,7 +100,7 @@ function split(s, sep, convert)
     return r
   end
   s = tostring(s)
-  if sep == nil then
+  if type(sep) ~= "string" and type(sep) ~= "number" then
     sep = ","
   end
   if convert == nil then

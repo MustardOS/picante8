@@ -37,13 +37,31 @@ adds:
 - **Speed:** filled circles draw one span per row, and whole number table keys skip the float conversion.
 - **Sound:** a new sound engine with all eight waveforms and effects, custom instruments, looping sounds, music fades
   and channel masks, the reverb, dampen and distortion filters, and output limited to PICO-8's bandwidth. Its
-  behaviour was checked against recordings of PICO-8 itself.
+  behaviour was checked against recordings of PICO-8 itself. The buzz, detune, reverb and dampen settings of each
+  sound follow zepto8's measurements for every waveform.
 - **Multicart:** `load()` switches to another cart with its parameter and breadcrumb, `reload()` reads another cart's
   data, and text carts can `#include` files from their folder.
 - **Graphics and memory:** memory remapping, screen modes, the secret palette, inverted fills, `tline` precision,
   `rrect` and `rrectfill`, and the out of range defaults for `sget`, `mget` and `pget`.
 - **Save states:** the cart's Lua state, memory and sound are saved and restored, including carts paused inside a
   `flip()` loop or a waiting `print`.
+- **Mouse:** carts that turn on the mouse with `poke(0x5f2d, 1)` read it through `stat(32)` to `stat(39)`. A stick
+  moves the cursor, and holding Y lets the D-Pad move it on devices without sticks. L1 is the left click, R1 the right
+  click, and L2 or R2 the middle click. A Libretro mouse or touch screen works as well. None of this changes the controls
+  of carts that never turn the mouse on.
+
+## Core Options
+
+| Option               | Choices                                              | Default  |
+|:---------------------|:-----------------------------------------------------|:---------|
+| Mouse Control        | Auto, Right Stick, Left Stick, D-Pad Hold, Disabled  | Auto     |
+| Mouse Speed          | Slow, Normal, Fast, Very Fast                        | Normal   |
+| Mouse Stick Deadzone | 10% to 30%                                           | 20%      |
+| Mouse Hold Button    | Y, Select                                            | Y        |
+| Mouse Cursor         | Disabled, Enabled                                    | Disabled |
+
+Auto uses whichever stick moves, with the right stick first, and also allows the hold button. Mouse Cursor draws an
+arrow for carts that do not draw their own.
 
 ## Building
 
@@ -67,6 +85,7 @@ The harness also takes these environment variables:
 - `P8_SAVE_DIR=path` keeps `cartdata` saves in that folder.
 - `P8_DUMP=dir` writes a frame image every `P8_DUMP_EVERY` frames.
 - `P8_PRESS=frame:button:length,...` presses buttons at the given frames.
+- `P8_MOUSE=frame:x:y:buttons,...` places the mouse and sets its buttons from the given frames.
 - `P8_WAV=file` writes the sound to a WAV file.
 - `P8_STATE=S:L` saves a state after frame S and restores it after frame L, with `P8_STATE_OUT` and `P8_STATE_IN`
   to write or read the state as a file.

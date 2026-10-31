@@ -151,6 +151,12 @@ namespace retro8
       void stop() { index = -1; note = -1; fade = 0; }
     };
 
+    /* the last two inputs and outputs of a biquad */
+    struct Shelf
+    {
+      float x1 = 0.0f, x2 = 0.0f, y1 = 0.0f, y2 = 0.0f;
+    };
+
     struct Channel
     {
       Voice voice;
@@ -163,7 +169,8 @@ namespace retro8
       uint32_t started = 0;
       uint8_t flags = 0;
 
-      float damped = 0.0f;
+      Shelf dampLight;
+      Shelf dampStrong;
       std::array<float, 4096> echo = {};
       size_t echoAt = 0;
     };
