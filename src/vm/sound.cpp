@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <memory>
 #include <type_traits>
 
 #if SOUND_ENABLED
@@ -827,10 +828,90 @@ namespace
   }
 }
 
+namespace
+{
+  /* "SND2" leads every sound state since the dampen filter became two shelves, so a later layout change is caught instead of read out of line */
+  constexpr uint32_t SOUND_STATE_TAG = 0x32444e53;
+
+  /* the channel as the 18 October 2026 build saved it, before dampen became two shelves */
+  struct LegacyChannel
+  {
+    Voice voice;
+    Voice instrument;
+    Voice ghostVoice;
+    Voice ghostInstrument;
+    int32_t ghostCount;
+    uint32_t started;
+    uint8_t flags;
+    float damped;
+    std::array<float, 4096> echo;
+    size_t echoAt;
+  };
+
+  Channel fromLegacy(const LegacyChannel& old)
+  {
+    Channel c;
+    c.voice = old.voice;
+    c.instrument = old.instrument;
+    c.ghostVoice = old.ghostVoice;
+    c.ghostInstrument = old.ghostInstrument;
+    c.ghostCount = old.ghostCount;
+    c.started = old.started;
+    c.flags = old.flags;
+    c.echo = old.echo;
+    c.echoAt = old.echoAt;
+    return c;
+  }
+
+  template<typename C> struct SoundState
+  {
+    std::array<C, 4> sfxChannels;
+    std::array<C, 4> musicChannels;
+    int32_t pattern;
+    int64_t patternPlayed;
+    int64_t patternLength;
+    uint8_t musicMask;
+    float musicVolume;
+    float musicFade;
+    bool musicStopping;
+    uint32_t starts;
+    uint32_t random;
+    std::array<float, 127> lowpassHistory;
+    size_t lowpassAt;
+  };
+
+  template<typename C> bool readState(const char* at, const char* end, SoundState<C>& state)
+  {
+    return getRaw(at, end, state.sfxChannels) && getRaw(at, end, state.musicChannels) && getRaw(at, end, state.pattern) &&
+      getRaw(at, end, state.patternPlayed) && getRaw(at, end, state.patternLength) && getRaw(at, end, state.musicMask) &&
+      getRaw(at, end, state.musicVolume) && getRaw(at, end, state.musicFade) && getRaw(at, end, state.musicStopping) &&
+      getRaw(at, end, state.starts) && getRaw(at, end, state.random) && getRaw(at, end, state.lowpassHistory) &&
+      getRaw(at, end, state.lowpassAt) && at == end;
+  }
+
+  template<typename C> size_t stateSize()
+  {
+    return sizeof(std::array<C, 4>) * 2 + sizeof(int32_t) + sizeof(int64_t) * 2 + sizeof(uint8_t) + sizeof(float) * 2 +
+      sizeof(bool) + sizeof(uint32_t) * 2 + sizeof(std::array<float, 127>) + sizeof(size_t);
+  }
+
+  template<typename C> bool plausible(const SoundState<C>& state)
+  {
+    if (state.lowpassAt >= 127 || state.pattern < -1 || state.pattern >= int32_t(MUSIC_COUNT)) return false;
+    if (!std::isfinite(state.musicVolume) || !std::isfinite(state.musicFade)) return false;
+
+    for (const float sample : state.lowpassHistory)
+      if (!std::isfinite(sample)) return false;
+
+    return true;
+  }
+}
+
 void APU::saveState(std::string& out)
 {
   mutex.lock();
   out.clear();
+  putRaw(out, SOUND_STATE_TAG);
   putRaw(out, sfxChannels);
   putRaw(out, musicChannels);
   putRaw(out, pattern);
@@ -847,22 +928,78 @@ void APU::saveState(std::string& out)
   mutex.unlock();
 }
 
+namespace
+{
+  template<typename C> void copyState(const SoundState<C>& from, SoundState<Channel>& to, Channel (*convert)(const C&))
+  {
+    for (size_t i = 0; i < from.sfxChannels.size(); ++i)
+    {
+      to.sfxChannels[i] = convert(from.sfxChannels[i]);
+      to.musicChannels[i] = convert(from.musicChannels[i]);
+    }
+
+    to.pattern = from.pattern;
+    to.patternPlayed = from.patternPlayed;
+    to.patternLength = from.patternLength;
+    to.musicMask = from.musicMask;
+    to.musicVolume = from.musicVolume;
+    to.musicFade = from.musicFade;
+    to.musicStopping = from.musicStopping;
+    to.starts = from.starts;
+    to.random = from.random;
+    to.lowpassHistory = from.lowpassHistory;
+    to.lowpassAt = from.lowpassAt;
+  }
+}
+
 bool APU::loadState(const std::string& in)
 {
   const char* at = in.data();
   const char* end = at + in.size();
 
+  uint32_t tag = 0;
+  const bool tagged = getRaw(at, end, tag) && tag == SOUND_STATE_TAG;
+
+  std::unique_ptr<SoundState<Channel>> current(new SoundState<Channel>());
+  std::unique_ptr<SoundState<LegacyChannel>> legacy;
+
+  bool ok = false;
+  if (tagged)
+  {
+    ok = readState(at, end, *current) && plausible(*current);
+  }
+  else if (in.size() == stateSize<LegacyChannel>())
+  {
+    legacy.reset(new SoundState<LegacyChannel>());
+    ok = readState(in.data(), end, *legacy) && plausible(*legacy);
+  }
+
+  if (ok && legacy) copyState(*legacy, *current, fromLegacy);
+
   mutex.lock();
-  const bool ok = getRaw(at, end, sfxChannels) && getRaw(at, end, musicChannels) && getRaw(at, end, pattern) &&
-    getRaw(at, end, patternPlayed) && getRaw(at, end, patternLength) && getRaw(at, end, musicMask) &&
-    getRaw(at, end, musicVolume) && getRaw(at, end, musicFade) && getRaw(at, end, musicStopping) &&
-    getRaw(at, end, starts) && getRaw(at, end, random) && getRaw(at, end, lowpassHistory) && getRaw(at, end, lowpassAt);
-  if (!ok || lowpassAt >= LOWPASS_TAPS)
+  if (ok)
+  {
+    sfxChannels = current->sfxChannels;
+    musicChannels = current->musicChannels;
+    pattern = current->pattern;
+    patternPlayed = current->patternPlayed;
+    patternLength = current->patternLength;
+    musicMask = current->musicMask;
+    musicVolume = current->musicVolume;
+    musicFade = current->musicFade;
+    musicStopping = current->musicStopping;
+    starts = current->starts;
+    random = current->random ? current->random : 0x12345678;
+    lowpassHistory = current->lowpassHistory;
+    lowpassAt = current->lowpassAt;
+  }
+  else
   {
     init();
-    lowpassAt = 0;
+    random = 0x12345678;
   }
   mutex.unlock();
+
   return ok;
 }
 
