@@ -1712,13 +1712,103 @@ Code::~Code()
     lua_close(L);
 }
 
+/* Lua frees a block with its size, so blocks up to 256 bytes come from free lists per 16 byte size class, carved from
+   64 KB chunks, instead of malloc and free on every table, closure and string the cart makes */
+namespace pool
+{
+  constexpr size_t STEP = 16, LIMIT = 256, CHUNK = 64 * 1024;
+
+  struct Block { Block* next; };
+  Block* freed[LIMIT / STEP + 1];
+  uint8_t* at = nullptr;
+  size_t left = 0;
+
+  inline size_t sizeClass(size_t size) { return size ? (size + STEP - 1) / STEP : 1; }
+
+  void* take(size_t cls)
+  {
+    if (Block* block = freed[cls])
+    {
+      freed[cls] = block->next;
+      return block;
+    }
+
+    const size_t bytes = cls * STEP;
+    if (left < bytes)
+    {
+      at = static_cast<uint8_t*>(malloc(CHUNK));
+      left = at ? CHUNK : 0;
+      if (!at)
+        return nullptr;
+    }
+
+    void* block = at;
+    at += bytes;
+    left -= bytes;
+    return block;
+  }
+
+  void give(void* ptr, size_t cls)
+  {
+    Block* block = static_cast<Block*>(ptr);
+    block->next = freed[cls];
+    freed[cls] = block;
+  }
+
+  void* alloc(void*, void* ptr, size_t osize, size_t nsize)
+  {
+    const bool oldSmall = ptr && osize <= LIMIT;
+    const bool newSmall = nsize <= LIMIT;
+
+    if (nsize == 0)
+    {
+      if (oldSmall)
+        give(ptr, sizeClass(osize));
+      else
+        free(ptr);
+      return nullptr;
+    }
+
+    if (!ptr)
+      return newSmall ? take(sizeClass(nsize)) : malloc(nsize);
+    if (oldSmall && newSmall && sizeClass(osize) == sizeClass(nsize))
+      return ptr;
+    if (!oldSmall && !newSmall)
+      return realloc(ptr, nsize);
+
+    void* moved = newSmall ? take(sizeClass(nsize)) : malloc(nsize);
+    if (!moved)
+      return nullptr;
+    memcpy(moved, ptr, std::min(osize, nsize));
+    if (oldSmall)
+      give(ptr, sizeClass(osize));
+    else
+      free(ptr);
+    return moved;
+  }
+
+  int panic(lua_State* L)
+  {
+    fprintf(stderr, "PANIC: unprotected error in call to Lua API (%s)\n", lua_tostring(L, -1));
+    return 0;
+  }
+
+  lua_State* newState()
+  {
+    lua_State* L = lua_newstate(alloc, nullptr);
+    if (L)
+      lua_atpanic(L, panic);
+    return L;
+  }
+}
+
 void Code::loadAPI()
 {
   platform::cartdataPath.clear();
 
   if (!L)
   {
-    L = luaL_newstate();
+    L = pool::newState();
   }
 
   luaL_openlibs(L);
@@ -1770,7 +1860,7 @@ void Code::printError(const char* where)
 bool Code::initFromSource(const std::string& code)
 {
   if (!L)
-    L = luaL_newstate();
+    L = pool::newState();
 
   registerFunctions(L);
 

@@ -156,11 +156,25 @@ void Machine::rectfill(coord_t x0, coord_t y0, coord_t x1, coord_t y1, color_t c
 
   if (!fill[0] && !fill[1])
   {
+    /* an odd first or even last pixel shares its byte, everything between is whole bytes */
     const color_t solid = palette->get(color_t(color & 0x0f));
+    const uint8_t pair = uint8_t(solid | (solid << 4));
 
     for (coord_t y = y0; y <= y1; ++y)
-      for (coord_t x = x0; x <= x1; ++x)
-        _memory.screenData(x, y)->set(x, solid);
+    {
+      gfx::color_byte_t* row = _memory.screenData(0, y);
+      coord_t x = x0;
+      if (x <= x1 && (x & 1))
+        row[x >> 1].high(solid), ++x;
+      if (x1 >= x + 1)
+      {
+        const coord_t bytes = (x1 + 1 - x) >> 1;
+        memset(row + (x >> 1), pair, bytes);
+        x += bytes * 2;
+      }
+      if (x <= x1)
+        row[x >> 1].low(solid);
+    }
     return;
   }
 
@@ -296,18 +310,39 @@ void Machine::circfill(coord_t xc, coord_t yc, amount_t r, color_t color, bool i
   }
 }
 
+/* the part of a w by h block at x, y that the camera and clip leave on screen, as offsets into the block */
+bool Machine::visible(coord_t& x, coord_t& y, coord_t w, coord_t h, coord_t& x0, coord_t& y0, coord_t& x1, coord_t& y1)
+{
+  const auto* clip = _memory.clipRect();
+  x -= _memory.camera()->x();
+  y -= _memory.camera()->y();
+
+  x0 = std::max<coord_t>(0, coord_t(clip->x0) - x);
+  y0 = std::max<coord_t>(0, coord_t(clip->y0) - y);
+  x1 = std::min<coord_t>(w, std::min<coord_t>(clip->x1, gfx::SCREEN_WIDTH) - x);
+  y1 = std::min<coord_t>(h, std::min<coord_t>(clip->y1, gfx::SCREEN_HEIGHT) - y);
+  return x0 < x1 && y0 < y1;
+}
+
 void Machine::spr(index_t idx, coord_t x, coord_t y)
 {
+  coord_t x0, y0, x1, y1;
+  if (!visible(x, y, gfx::SPRITE_WIDTH, gfx::SPRITE_HEIGHT, x0, y0, x1, y1))
+    return;
+
   const gfx::sprite_t* sprite = _memory.spriteAt(idx);
   const gfx::palette_t* palette = _memory.paletteAt(gfx::DRAW_PALETTE_INDEX);
 
-  for (coord_t ty = 0; ty < gfx::SPRITE_HEIGHT; ++ty)
-    for (coord_t tx = 0; tx < gfx::SPRITE_WIDTH; ++tx)
+  for (coord_t ty = y0; ty < y1; ++ty)
+  {
+    gfx::color_byte_t* row = _memory.screenData(0, y + ty);
+    for (coord_t tx = x0; tx < x1; ++tx)
     {
-      color_t color = sprite->get(tx, ty);
+      const color_t color = sprite->get(tx, ty);
       if (!palette->transparent(color))
-        pset(x + tx, y + ty, color);
+        row[(x + tx) >> 1].set((x + tx) & 1, palette->get(color));
     }
+  }
 }
 
 void Machine::spr(index_t idx, coord_t bx, coord_t by, float sw, float sh, bool flipX, bool flipY)
@@ -320,19 +355,24 @@ void Machine::spr(index_t idx, coord_t bx, coord_t by, float sw, float sh, bool 
   /* we bypass spriteAt since we can use directly the address */
   const gfx::color_byte_t* base = reinterpret_cast<const gfx::color_byte_t*>(_memory.spriteAt(idx));
 
-  for (coord_t y = 0; y < h; ++y)
-  {
-    for (coord_t x = 0; x < w; ++x)
-    {
-      coord_t fx = flipX ? (w - x - 1) : x;
-      coord_t fy = flipY ? (h - y - 1) : y;
+  /* walk the destination that stays on screen and read back the source pixel each one shows */
+  coord_t x0, y0, x1, y1;
+  if (w <= 0 || h <= 0 || !visible(bx, by, w, h, x0, y0, x1, y1))
+    return;
 
-      //TODO: optimize by fetching only once if we need to read next pixel?
-      const gfx::color_byte_t pair = *(base + y * gfx::SPRITE_SHEET_PITCH + x / gfx::PIXEL_TO_BYTE_RATIO);
-      const color_t color = pair.get(x);
+  for (coord_t fy = y0; fy < y1; ++fy)
+  {
+    const coord_t y = flipY ? (h - fy - 1) : fy;
+    const gfx::color_byte_t* source = base + y * gfx::SPRITE_SHEET_PITCH;
+    gfx::color_byte_t* row = _memory.screenData(0, by + fy);
+
+    for (coord_t fx = x0; fx < x1; ++fx)
+    {
+      const coord_t x = flipX ? (w - fx - 1) : fx;
+      const color_t color = source[x >> 1].get(x & 1);
 
       if (!palette->transparent(color))
-        pset(bx + fx, by + fy, color);
+        row[(bx + fx) >> 1].set((bx + fx) & 1, palette->get(color));
     }
   }
 }
@@ -521,7 +561,7 @@ coord_t Machine::print(const std::string& string, coord_t x, coord_t y, color_t 
       continue;
     }
 
-    auto specialGlyph = std::find_if(SpecialGlyphs.begin(), SpecialGlyphs.end(), [&string, &i](const SpecialGlyph& glyph) {
+    auto specialGlyph = static_cast<uint8_t>(c) < 0x80 ? SpecialGlyphs.end() : std::find_if(SpecialGlyphs.begin(), SpecialGlyphs.end(), [&string, &i](const SpecialGlyph& glyph) {
       return string.size() >= i + glyph.encoding.size() && memcmp(&string[i], &glyph.encoding[0], glyph.encoding.size()) == 0; //TODO: memcmp is not best design ever
     });
 
@@ -565,9 +605,17 @@ void Machine::pal(color_t c0, color_t c1, palette_index_t index)
 
 void Machine::map(coord_t cx, coord_t cy, coord_t x, coord_t y, amount_t cw, amount_t ch, sprite_flags_t layer)
 {
-  for (amount_t ty = 0; ty < ch; ++ty)
+  /* tiles wholly outside the camera and clip draw nothing, so the loop skips them */
+  coord_t sx = x, sy = y, px0, py0, px1, py1;
+  if (cw <= 0 || ch <= 0 || !visible(sx, sy, cw * gfx::SPRITE_WIDTH, ch * gfx::SPRITE_HEIGHT, px0, py0, px1, py1))
+    return;
+
+  const amount_t tx0 = px0 / gfx::SPRITE_WIDTH, tx1 = (px1 + gfx::SPRITE_WIDTH - 1) / gfx::SPRITE_WIDTH;
+  const amount_t ty0 = py0 / gfx::SPRITE_HEIGHT, ty1 = (py1 + gfx::SPRITE_HEIGHT - 1) / gfx::SPRITE_HEIGHT;
+
+  for (amount_t ty = ty0; ty < ty1; ++ty)
   {
-    for (amount_t tx = 0; tx < cw; ++tx)
+    for (amount_t tx = tx0; tx < tx1; ++tx)
     {
       const coord_t mx = cx + tx, my = cy + ty;
       if (!_memory.inMap(mx, my))

@@ -84,6 +84,7 @@ namespace retro8
     void pal(color_t c0, color_t c1, palette_index_t index);
 
     void map(coord_t cx, coord_t cy, coord_t x, coord_t y, amount_t cw, amount_t ch, sprite_flags_t layer);
+    bool visible(coord_t& x, coord_t& y, coord_t w, coord_t h, coord_t& x0, coord_t& y0, coord_t& x1, coord_t& y1);
     void spr(index_t idx, coord_t x, coord_t y);
     void spr(index_t idx, coord_t x, coord_t y, float w, float h, bool flipX, bool flipY);
     void sspr(coord_t sx, coord_t sy, coord_t sw, coord_t sh, coord_t dx, coord_t dy, coord_t dw, coord_t dh, bool flipX, bool flipY);
