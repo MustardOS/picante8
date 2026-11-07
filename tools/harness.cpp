@@ -64,7 +64,7 @@ static void dump_frame(const char *dir, int frame) {
     for (int i = 0; i < 128 * 128; i++) {
         uint8_t pair = mem[0x6000 + i / 2];
         uint8_t c = (i & 1) ? pair >> 4 : pair & 15;
-        uint8_t s = mem[0x5f10 + c];
+        uint8_t s = machine->memory().screenEntry(retro8::color_t(c), i / 128);
         const uint8_t *rgb = dump_rgb[(s & 15) | ((s & 0x80) ? 16 : 0)];
         fwrite(rgb, 1, 3, out);
     }
@@ -126,9 +126,10 @@ int main(int argc, char **argv) {
                 const char *p = press;
                 while (*p) {
                     int at = 0, button = 0, len = 0;
-                    if (sscanf(p, "%d:%d:%d", &at, &button, &len) == 3) {
-                        if (i == at) input.manageKey(0, button, true);
-                        if (i == at + len) input.manageKey(0, button, false);
+                    int player = 0;
+                    if (sscanf(p, "%d:%d:%d:%d", &at, &button, &len, &player) >= 3 && player >= 0 && player < (int) retro8::PLAYER_COUNT) {
+                        if (i == at) input.manageKey(player, button, true);
+                        if (i == at + len) input.manageKey(player, button, false);
                     }
                     p = strchr(p, ',');
                     if (!p) break;

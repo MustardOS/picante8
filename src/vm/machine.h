@@ -85,6 +85,19 @@ namespace retro8
 
     void map(coord_t cx, coord_t cy, coord_t x, coord_t y, amount_t cw, amount_t ch, sprite_flags_t layer);
     bool visible(coord_t& x, coord_t& y, coord_t w, coord_t h, coord_t& x0, coord_t& y0, coord_t& x1, coord_t& y1);
+
+    /* 0x5f5e keeps the low nibble as the bits a write may change and the high nibble as the bits taken from the colour,
+       0 or 0xff leaving every bit to the colour */
+    uint8_t bitplanes() { const uint8_t mask = _memory.base()[0x5f5e]; return mask == 0xff ? 0 : mask; }
+    static void plot(gfx::color_byte_t* row, coord_t x, color_t color, uint8_t mask)
+    {
+      if (mask)
+      {
+        const uint8_t write = mask & 0x0f, read = mask >> 4;
+        color = color_t((row[x >> 1].get(x & 1) & ~write & 0x0f) | (color & write & read));
+      }
+      row[x >> 1].set(x & 1, color);
+    }
     void spr(index_t idx, coord_t x, coord_t y);
     void spr(index_t idx, coord_t x, coord_t y, float w, float h, bool flipX, bool flipY);
     void sspr(coord_t sx, coord_t sy, coord_t sw, coord_t sh, coord_t dx, coord_t dy, coord_t dw, coord_t dh, bool flipX, bool flipY);

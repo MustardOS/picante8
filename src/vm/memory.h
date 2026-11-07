@@ -68,6 +68,7 @@ namespace retro8
       clipRect()->reset();
       cursor()->reset();
       resetMapping();
+      memory[0x5f5e] = 0xff;
     }
 
     /* 0x5f54 picks the sprite sheet, 0x5f55 the screen that drawing goes to, and 0x5f56 and 0x5f57 the map and its width */
@@ -167,6 +168,20 @@ namespace retro8
         + (index % gfx::SPRITES_PER_SPRITE_SHEET_ROW) * gfx::SPRITE_BYTES_PER_SPRITE_ROW]
         + (index / gfx::SPRITES_PER_SPRITE_SHEET_ROW) * gfx::SPRITE_SHEET_PITCH * gfx::SPRITE_HEIGHT
         ); }
+    /* the screen palette entry colour c shows through on line y. 0x5f5f at 0x10 swaps in the palette at 0x5f60 on the
+       lines whose bit is set in 0x5f70 to 0x5f7f, and 0x3n turns colour n into a gradient down that palette, a step every
+       8 lines and a step further on lines whose bit is set */
+    uint8_t screenEntry(color_t c, coord_t y) const
+    {
+      const uint8_t mode = memory[0x5f5f];
+      const bool marked = (memory[0x5f70 + (y >> 3)] >> (y & 7)) & 1;
+      if (mode == 0x10 && marked)
+        return memory[0x5f60 + c];
+      if ((mode & 0x30) == 0x30 && (mode & 0x0f) == c)
+        return memory[0x5f60 + ((y / 8 + marked) & 0x0f)];
+      return memory[address::PALETTES + gfx::SCREEN_PALETTE_INDEX * BYTES_PER_PALETTE + c];
+    }
+
     gfx::palette_t* paletteAt(palette_index_t index) { return reinterpret_cast<gfx::palette_t*>(&memory[address::PALETTES + index * BYTES_PER_PALETTE]); }
 
     template<typename T> T* as(address_t addr) { return reinterpret_cast<T*>(&memory[addr]); }

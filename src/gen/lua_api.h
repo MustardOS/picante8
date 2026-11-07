@@ -309,6 +309,7 @@ const char* lua_api_string =
 "  color(6)\n"
 "  cursor(0, 0)\n"
 "  poke(0x5f54, 0, 0x60, 0x20, 0x80)\n"
+"  poke(0x5f5e, 0xff)\n"
 "  line()\n"
 "  tline(13)\n"
 "end\n"

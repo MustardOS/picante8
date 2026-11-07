@@ -45,6 +45,10 @@ adds:
   data, and text carts can `#include` files from their folder.
 - **Graphics and memory:** memory remapping, screen modes, the secret palette, inverted fills, `tline` precision,
   `rrect` and `rrectfill`, and the out of range defaults for `sget`, `mget` and `pget`.
+- **Bitplanes and scanline palettes:** `0x5f5e` masks the bits drawing reads and writes. `0x5f5f` shows the secondary
+  palette at `0x5f60`, set with `pal(c, v, 2)`, on the lines marked in `0x5f70` to `0x5f7f`, or turns one colour into a
+  gradient down that palette.
+- **Players:** four players, each with their own controller, as `btn(b, 0)` to `btn(b, 3)`.
 - **Save states:** the cart's Lua state, memory and sound are saved and restored, including carts paused inside a
   `flip()` loop or a waiting `print`.
 - **Mouse:** carts that turn on the mouse with `poke(0x5f2d, 1)` read it through `stat(32)` to `stat(39)`. A stick
@@ -93,7 +97,7 @@ The harness also takes these environment variables:
 - `P8_TRACE_AFTER=N` prints a Lua traceback after N seconds, for carts that hang.
 - `P8_SAVE_DIR=path` keeps `cartdata` saves in that folder.
 - `P8_DUMP=dir` writes a frame image every `P8_DUMP_EVERY` frames.
-- `P8_PRESS=frame:button:length,...` presses buttons at the given frames.
+- `P8_PRESS=frame:button:length[:player],...` presses buttons at the given frames, for player 0 unless another is given.
 - `P8_MOUSE=frame:x:y:buttons,...` places the mouse and sets its buttons from the given frames.
 - `P8_KEYS=frame:scancode:frames,...` holds a devkit keyboard key by SDL scancode for the given number of frames.
 - `P8_WAV=file` writes the sound to a WAV file.

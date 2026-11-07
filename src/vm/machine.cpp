@@ -34,7 +34,7 @@ void Machine::pset(coord_t x, coord_t y, color_t color)
   if (x >= clip->x0 && x < clip->x1 && y >= clip->y0 && y < clip->y1)
   {
     color = _memory.paletteAt(gfx::DRAW_PALETTE_INDEX)->get(color_t(color % gfx::COLOR_COUNT));
-    _memory.screenData(x, y)->set(x, color);
+    plot(_memory.screenData(0, y), x, color, bitplanes());
   }
 }
 
@@ -154,7 +154,9 @@ void Machine::rectfill(coord_t x0, coord_t y0, coord_t x1, coord_t y1, color_t c
   auto* palette = _memory.paletteAt(gfx::DRAW_PALETTE_INDEX);
   const uint8_t* fill = _memory.base() + address::FILL_PATTERN;
 
-  if (!fill[0] && !fill[1])
+  const uint8_t mask = bitplanes();
+
+  if (!fill[0] && !fill[1] && !mask)
   {
     /* an odd first or even last pixel shares its byte, everything between is whole bytes */
     const color_t solid = palette->get(color_t(color & 0x0f));
@@ -183,7 +185,7 @@ void Machine::rectfill(coord_t x0, coord_t y0, coord_t x1, coord_t y1, color_t c
     {
       const int c = patterned(x, y, color);
       if (c >= 0)
-        _memory.screenData(x, y)->set(x, palette->get(color_t(c)));
+        plot(_memory.screenData(0, y), x, palette->get(color_t(c)), mask);
     }
 #else
   for (coord_t y = y0; y <= y1; ++y)
@@ -332,6 +334,7 @@ void Machine::spr(index_t idx, coord_t x, coord_t y)
 
   const gfx::sprite_t* sprite = _memory.spriteAt(idx);
   const gfx::palette_t* palette = _memory.paletteAt(gfx::DRAW_PALETTE_INDEX);
+  const uint8_t mask = bitplanes();
 
   for (coord_t ty = y0; ty < y1; ++ty)
   {
@@ -340,7 +343,7 @@ void Machine::spr(index_t idx, coord_t x, coord_t y)
     {
       const color_t color = sprite->get(tx, ty);
       if (!palette->transparent(color))
-        row[(x + tx) >> 1].set((x + tx) & 1, palette->get(color));
+        plot(row, x + tx, palette->get(color), mask);
     }
   }
 }
@@ -359,6 +362,7 @@ void Machine::spr(index_t idx, coord_t bx, coord_t by, float sw, float sh, bool 
   coord_t x0, y0, x1, y1;
   if (w <= 0 || h <= 0 || !visible(bx, by, w, h, x0, y0, x1, y1))
     return;
+  const uint8_t mask = bitplanes();
 
   for (coord_t fy = y0; fy < y1; ++fy)
   {
@@ -372,7 +376,7 @@ void Machine::spr(index_t idx, coord_t bx, coord_t by, float sw, float sh, bool 
       const color_t color = source[x >> 1].get(x & 1);
 
       if (!palette->transparent(color))
-        row[(bx + fx) >> 1].set((bx + fx) & 1, palette->get(color));
+        plot(row, bx + fx, palette->get(color), mask);
     }
   }
 }

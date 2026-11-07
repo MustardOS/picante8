@@ -331,7 +331,14 @@ int tline(lua_State* L)
 
 static int pal_set(int c0, int c1, palette_index_t index)
 {
-  /* only the draw and screen palettes exist here, the secondary palette of p = 2 is not supported */
+  /* p = 2 is the secondary palette at 0x5f60 that 0x5f5f shows on chosen lines, stored like the screen palette */
+  if (index == 2)
+  {
+    uint8_t& entry = machine->memory().base()[0x5f60 + (c0 & 0x0f)];
+    const int previous = entry;
+    entry = uint8_t(c1);
+    return previous;
+  }
   if (index > gfx::SCREEN_PALETTE_INDEX)
     return 0;
 
@@ -356,6 +363,7 @@ int pal(lua_State* L)
   {
     machine->memory().paletteAt(gfx::DRAW_PALETTE_INDEX)->reset();
     machine->memory().paletteAt(gfx::SCREEN_PALETTE_INDEX)->resetScreen();
+    memset(machine->memory().base() + 0x5f60, 0, 16);
     return 0;
   }
 
@@ -366,6 +374,8 @@ int pal(lua_State* L)
       machine->memory().paletteAt(gfx::DRAW_PALETTE_INDEX)->reset();
     else if (index == (int)gfx::SCREEN_PALETTE_INDEX)
       machine->memory().paletteAt(gfx::SCREEN_PALETTE_INDEX)->resetScreen();
+    else if (index == 2)
+      memset(machine->memory().base() + 0x5f60, 0, 16);
     return 0;
   }
 

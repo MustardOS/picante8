@@ -39,9 +39,20 @@ public:
     delete[] overlay;
   }
 
+  /* the 16 colours a source line shows, which can differ line to line through 0x5f5f */
+  void lineColours(r8::Memory& memory, int y, pixel_t* colours) {
+    for (int c = 0; c < 16; ++c) {
+      const uint8_t entry = memory.screenEntry(r8::color_t(c), y);
+      colours[c] = colorTable.get((entry & 0x0f) | ((entry & 0x80) >> 3));
+    }
+  }
+
   /* 0x5f2c: 1 to 3 stretch the left or top half, 5 to 7 mirror it, 129 to 131 flip, 133 to 135 rotate by 90, 180 and 270 */
-  void draw(const r8::gfx::color_byte_t *data, r8::gfx::palette_t *palette, uint8_t mode) {
+  void draw(const r8::gfx::color_byte_t *data, r8::Memory& memory, uint8_t mode) {
     auto pointer = buffer;
+    pixel_t colours[128][16];
+    for (int y = 0; y < 128; ++y)
+      lineColours(memory, y, colours[y]);
 
     if (mode != 0) {
       for (int y = 0; y < 128; ++y) {
@@ -63,7 +74,7 @@ public:
           default: break;
           }
           const r8::gfx::color_byte_t* pixels = data + sy * 64 + sx / 2;
-          *pointer++ = colorTable.get(palette->screen((sx & 1) ? pixels->high() : pixels->low()));
+          *pointer++ = colours[sy][(sx & 1) ? pixels->high() : pixels->low()];
         }
       }
       return;
@@ -71,11 +82,10 @@ public:
 
     for (size_t i = 0; i < r8::gfx::BYTES_PER_SCREEN; ++i) {
       const r8::gfx::color_byte_t* pixels = data + i;
-      const auto rc1 = colorTable.get(palette->screen((pixels)->low()));
-      const auto rc2 = colorTable.get(palette->screen((pixels)->high()));
+      const pixel_t* line = colours[i / 64];
 
-      *(pointer) = rc1;
-      *((pointer)+1) = rc2;
+      *(pointer) = line[pixels->low()];
+      *((pointer)+1) = line[pixels->high()];
       (pointer) += 2;
     }
   }
@@ -614,6 +624,18 @@ static struct retro_input_descriptor input_desc[] = {
     { 1, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_UP,    "Up" },
     { 1, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_A,     "O" },
     { 1, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_B,     "X" },
+    { 2, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_LEFT,  "Left" },
+    { 2, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_DOWN,  "Down" },
+    { 2, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_RIGHT, "Right" },
+    { 2, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_UP,    "Up" },
+    { 2, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_A,     "O" },
+    { 2, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_B,     "X" },
+    { 3, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_LEFT,  "Left" },
+    { 3, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_DOWN,  "Down" },
+    { 3, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_RIGHT, "Right" },
+    { 3, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_UP,    "Up" },
+    { 3, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_A,     "O" },
+    { 3, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_B,     "X" },
     { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_Y,     "Mouse D-Pad Hold" },
     { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_L,     "Mouse Left Click" },
     { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_R,     "Mouse Right Click" },
@@ -915,13 +937,12 @@ extern "C"
 
       /* rasterize screen memory to ARGB framebuffer */
       auto* data = machine->memory().displayData();
-      auto* screenPalette = machine->memory().paletteAt(retro8::gfx::SCREEN_PALETTE_INDEX);
 
       const uint8_t mode = machine->memory().base()[0x5f2c];
       if (env.isRGB32)
-	screen32->draw(data, screenPalette, mode);
+	screen32->draw(data, machine->memory(), mode);
       else
-	screen16->draw(data, screenPalette, mode);
+	screen16->draw(data, machine->memory(), mode);
     }
 
     const bool arrow = mouse::drawCursor();
