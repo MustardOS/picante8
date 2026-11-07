@@ -19,6 +19,8 @@ adds:
   point like PICO-8, and integer division or modulo by zero no longer stops the cart.
 - **Strings:** the P8SCII escapes `\*` `\#` `\-` `\|` `\+` `\^`, a working `sub`, and `tostr` and `tonum` with their
   PICO-8 formats and flags.
+- **Custom fonts:** a font poked into `0x5600` is used after the P8SCII `\14` code or by default once `0x5f58` has
+  `0x81` set, with its own width, height, offsets and per character adjustments, until `\15` switches back.
 - **API:** `split` `chr` `ord` `deli` `pack` `unpack` `inext` `stop` `oval` `ovalfill`, `add` with an index, `count`
   with a value, and arguments passed through `yield` and `coresume`.
 - **Fixes:** `print(str, col)`, `srand()` without a seed, `reload` reading the correct arguments, map and memory calls
@@ -47,8 +49,11 @@ adds:
   `flip()` loop or a waiting `print`.
 - **Mouse:** carts that turn on the mouse with `poke(0x5f2d, 1)` read it through `stat(32)` to `stat(39)`. A stick
   moves the cursor, and holding Y lets the D-Pad move it on devices without sticks. L1 is the left click, R1 the right
-  click, and L2 or R2 the middle click. A Libretro mouse or touch screen works as well. None of this changes the controls
+  click, and L2 the middle click. A Libretro mouse or touch screen works as well. None of this changes the controls
   of carts that never turn the mouse on.
+- **Keyboard:** the same carts read the devkit keyboard through `stat(28)`, `stat(30)` and `stat(31)`. The D-Pad holds
+  the arrow keys, WASD, ESDF or IJKL, O and X hold Z and X, and the X button holds Space or another chosen key. A
+  Libretro keyboard works as well.
 
 ## Core Options
 
@@ -58,10 +63,14 @@ adds:
 | Mouse Speed          | Slow, Normal, Fast, Very Fast                        | Normal   |
 | Mouse Stick Deadzone | 10% to 30%                                           | 20%      |
 | Mouse Hold Button    | Y, Select                                            | Y        |
-| Mouse Cursor         | Disabled, Enabled                                    | Disabled |
+| Mouse Cursor         | Hidden, Shown                                        | Hidden   |
+| Mouse Function       | Free Movement, Return to Centre                      | Free     |
+| Keyboard D-Pad       | Arrow Keys, WASD, ESDF, IJKL, Disabled               | Arrows   |
+| Keyboard X Button    | Space, Enter, Shift, Tab, Escape, Disabled           | Space    |
 
 Auto uses whichever stick moves, with the right stick first, and also allows the hold button. Mouse Cursor draws an
-arrow for carts that do not draw their own.
+arrow for carts that do not draw their own. Return to Centre places the cursor out from the middle as far as the stick
+is pushed and glides it back when the stick is let go.
 
 ## Building
 
@@ -86,6 +95,7 @@ The harness also takes these environment variables:
 - `P8_DUMP=dir` writes a frame image every `P8_DUMP_EVERY` frames.
 - `P8_PRESS=frame:button:length,...` presses buttons at the given frames.
 - `P8_MOUSE=frame:x:y:buttons,...` places the mouse and sets its buttons from the given frames.
+- `P8_KEYS=frame:scancode:frames,...` holds a devkit keyboard key by SDL scancode for the given number of frames.
 - `P8_WAV=file` writes the sound to a WAV file.
 - `P8_STATE=S:L` saves a state after frame S and restores it after frame L, with `P8_STATE_OUT` and `P8_STATE_IN`
   to write or read the state as a file.

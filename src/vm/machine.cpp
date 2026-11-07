@@ -398,16 +398,25 @@ coord_t Machine::print(const std::string& string, coord_t x, coord_t y, color_t 
     return 0;
   };
 
+  /* 0x5f58 sets default print attributes once bit 0 is on: 0x4 wide, 0x8 tall and 0x80 the custom font at 0x5600 */
+  const uint8_t* ram = _memory.base();
+  const uint8_t attributes = ram[0x5f58];
+  const bool defaults = attributes & 0x01;
+
   coord_t sx = x;
   coord_t right = x;
-  int wide = 1, tall = 1;
-  coord_t lineHeight = TEXT_LINE_HEIGHT;
+  int wide = defaults && (attributes & 0x04) ? 2 : 1;
+  int tall = defaults && (attributes & 0x08) ? 2 : 1;
+  bool custom = defaults && (attributes & 0x80);
+  auto fontHeight = [&]() -> coord_t { return custom ? ram[0x5602] : TEXT_LINE_HEIGHT; };
+  coord_t lineHeight = fontHeight() * tall;
   size_t start = 0;
 
   if (state && state->position > 0)
   {
     x = state->x; y = state->y; sx = state->sx; right = state->right;
     wide = state->wide; tall = state->tall; lineHeight = state->lineHeight; color = state->color;
+    custom = state->custom;
     start = state->position;
   }
   if (state)
@@ -426,7 +435,7 @@ coord_t Machine::print(const std::string& string, coord_t x, coord_t y, color_t 
     if (c == '\n')
     {
       y += lineHeight;
-      lineHeight = TEXT_LINE_HEIGHT * tall;
+      lineHeight = fontHeight() * tall;
       x = sx;
       continue;
     }
@@ -451,7 +460,7 @@ coord_t Machine::print(const std::string& string, coord_t x, coord_t y, color_t 
           /* \^1 to \^9 wait 1, 2, 4 ... 256 frames before carrying on */
           if (command >= '1' && command <= '9' && state)
           {
-            *state = { i + 1, 1 << (command - '1'), x, y, sx, right, lineHeight, wide, tall, color };
+            *state = { i + 1, 1 << (command - '1'), x, y, sx, right, lineHeight, wide, tall, color, custom };
             return finish();
           }
           if (command == 'c')
@@ -461,7 +470,7 @@ coord_t Machine::print(const std::string& string, coord_t x, coord_t y, color_t 
           }
           if (command == 'w' || command == 'p') wide = off ? 1 : 2;
           if (command == 't' || command == 'p') tall = off ? 1 : 2;
-          if (tall * TEXT_LINE_HEIGHT > lineHeight) lineHeight = tall * TEXT_LINE_HEIGHT;
+          if (tall * fontHeight() > lineHeight) lineHeight = tall * fontHeight();
           if (command && std::strchr("cdsxy", command)) i += 1;
           else if (command == 'j') i += 2;
           break;
@@ -474,8 +483,41 @@ coord_t Machine::print(const std::string& string, coord_t x, coord_t y, color_t 
         case 11: i += 2; break;                                 /* \v decoration */
         case 12: color = static_cast<color_t>(argument(i + 1) & 0x0f); i += 1; break;  /* \f colour */
         case 13: x = sx; break;                                 /* \r carriage return */
-        default: break;                                         /* fonts and unused codes */
+        case 14:                                                /* \14 custom font, \15 default font */
+        case 15:
+          custom = c == 14;
+          if (fontHeight() * tall > lineHeight) lineHeight = fontHeight() * tall;
+          break;
+        default: break;                                         /* unused codes */
       }
+      continue;
+    }
+
+    if (custom)
+    {
+      /* each character is 8 bytes from 0x5600, one row per byte with the lowest bit on the left */
+      const uint8_t code = static_cast<uint8_t>(c);
+      const uint8_t* glyph = ram + 0x5600 + code * 8;
+      coord_t width = code < 128 ? ram[0x5600] : ram[0x5601];
+      coord_t raise = 0;
+      if ((ram[0x5605] & 0x01) && code >= 16)
+      {
+        const uint8_t adjust = (ram[0x5608 + (code - 16) / 2] >> ((code & 1) ? 4 : 0)) & 0x0f;
+        width += (adjust & 0x07) >= 4 ? (adjust & 0x07) - 8 : (adjust & 0x07);
+        if (adjust & 0x08) raise = 1;
+      }
+      const coord_t ox = static_cast<int8_t>(ram[0x5603]);
+      const coord_t oy = static_cast<int8_t>(ram[0x5604]) - raise;
+
+      for (coord_t ty = 0; ty < 8; ++ty)
+        for (coord_t tx = 0; tx < 8; ++tx)
+          if (glyph[ty] & (1 << tx))
+            for (int py = 0; py < tall; ++py)
+              for (int px = 0; px < wide; ++px)
+                pset(x + (ox + tx) * wide + px, y + (oy + ty) * tall + py, color);
+
+      x += width * wide;
+      if (x > right) right = x;
       continue;
     }
 

@@ -135,6 +135,25 @@ int main(int argc, char **argv) {
                     ++p;
                 }
             }
+            /* P8_KEYS="frame:scancode:frames,..." holds a devkit keyboard key, typing its character if it has one */
+            if (const char *spec = getenv("P8_KEYS")) {
+                auto &keyboard = machine->state().keyboard;
+                const char *p = spec;
+                while (*p) {
+                    int at = 0, code = 0, len = 0;
+                    if (sscanf(p, "%d:%d:%d", &at, &code, &len) == 3 && code >= 0 && code < 256) {
+                        if (i == at) {
+                            keyboard.held[code] = true;
+                            if (code >= 4 && code <= 29) keyboard.typed += char('a' + code - 4);
+                            if (code == 44) keyboard.typed += ' ';
+                        }
+                        if (i == at + len) keyboard.held[code] = false;
+                    }
+                    p = strchr(p, ',');
+                    if (!p) break;
+                    ++p;
+                }
+            }
             /* P8_MOUSE="frame:x:y:buttons,..." sets the devkit mouse from that frame on */
             if (const char *spec = getenv("P8_MOUSE")) {
                 const char *p = spec;

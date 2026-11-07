@@ -1395,7 +1395,19 @@ namespace platform
     {
     case 0: lua_pushnumber(L, lua_gc(L, LUA_GCCOUNT, 0)); break;
     case 1: case 2: lua_pushnumber(L, machine->code().cpuLoad()); break;
-    case 4: case 31: lua_pushstring(L, ""); break;
+    case 4: lua_pushstring(L, ""); break;
+    case 31:
+    {
+      auto& typed = machine->state().keyboard.typed;
+      if ((machine->memory().base()[0x5f2d] & 1) && !typed.empty())
+      {
+        lua_pushlstring(L, typed.data(), 1);
+        typed.erase(0, 1);
+      }
+      else
+        lua_pushstring(L, "");
+      break;
+    }
     case 6: lua_pushstring(L, lua::cartParam.c_str()); break;
     case 5: lua_pushinteger(L, 41); break;
     case 7: case 8: case 9: lua_pushinteger(L, fps); break;
@@ -1406,7 +1418,15 @@ namespace platform
     case 24: case 54: lua_pushinteger(L, music_pattern()); break;
     case 26: case 56: lua_pushinteger(L, music_ticks()); break;
     case 57: lua_pushboolean(L, music_pattern() >= 0); break;
-    case 28: case 30: case 110: case 120: case 121: lua_pushboolean(L, 0); break;
+    case 28:
+    {
+      const int code = lua_isnumber(L, 2) ? (int)lua_tonumber(L, 2) : -1;
+      const auto& held = machine->state().keyboard.held;
+      lua_pushboolean(L, (machine->memory().base()[0x5f2d] & 1) && code >= 0 && code < (int)held.size() && held[code]);
+      break;
+    }
+    case 30: lua_pushboolean(L, (machine->memory().base()[0x5f2d] & 1) && !machine->state().keyboard.typed.empty()); break;
+    case 110: case 120: case 121: lua_pushboolean(L, 0); break;
     case 32: case 33: case 34: case 36: case 38: case 39:
     {
       const auto& mouse = machine->state().mouse;

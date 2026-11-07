@@ -8,6 +8,7 @@
 #include "memory.h"
 
 #include <array>
+#include <string>
 #include <random>
 
 namespace retro8
@@ -29,6 +30,13 @@ namespace retro8
       int32_t wheel = 0;
       int32_t dx = 0, dy = 0;
     } mouse;
+
+    /* the devkit keyboard: keys held by SDL scancode for stat(28), and characters typed since stat(31) last took one */
+    struct Keyboard
+    {
+      std::array<bool, 256> held = {};
+      std::string typed;
+    } keyboard;
   };
 
   class Machine
@@ -88,6 +96,7 @@ namespace retro8
       coord_t x = 0, y = 0, sx = 0, right = 0, lineHeight = 0;
       int wide = 1, tall = 1;
       color_t color = color_t(0);
+      bool custom = false;
     };
 
     coord_t print(const std::string& string, coord_t x, coord_t y, color_t color, coord_t* bottom = nullptr, PrintState* state = nullptr);

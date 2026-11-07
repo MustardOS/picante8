@@ -183,6 +183,7 @@ namespace mouse
     float deadzone = 0.2f;
     unsigned hold = RETRO_DEVICE_ID_JOYPAD_Y;
     bool cursor = false;
+    bool centre = false;
   };
 
   struct Cursor
@@ -215,9 +216,21 @@ namespace mouse
       { { "y", "Y" }, { "select", "Select" }, { NULL, NULL } },
       "y" },
     { "picante8_mouse_cursor", "Mouse Cursor",
-      "Draws an arrow at the mouse for carts that do not draw their own.",
-      { { "off", "Disabled" }, { "on", "Enabled" }, { NULL, NULL } },
+      "Shows an arrow at the mouse for carts that do not draw their own, or hides it. A cart that draws its own pointer keeps it.",
+      { { "off", "Hidden" }, { "on", "Shown" }, { NULL, NULL } },
       "off" },
+    { "picante8_mouse_function", "Mouse Function",
+      "Free Movement leaves the cursor where it is moved to. Return to Centre places it out from the middle of the screen as far as the stick is pushed, and glides it back to the middle when the stick and D-Pad are let go.",
+      { { "free", "Free Movement" }, { "centre", "Return to Centre" }, { NULL, NULL } },
+      "free" },
+    { "picante8_keyboard_dpad", "Keyboard D-Pad",
+      "For carts that read the keyboard, the D-Pad also holds these keys.",
+      { { "arrows", "Arrow Keys" }, { "wasd", "WASD" }, { "esdf", "ESDF" }, { "ijkl", "IJKL" }, { "off", "Disabled" }, { NULL, NULL } },
+      "arrows" },
+    { "picante8_keyboard_key", "Keyboard X Button",
+      "For carts that read the keyboard, the X button presses this key. O and X still press Z and X.",
+      { { "space", "Space" }, { "enter", "Enter" }, { "shift", "Shift" }, { "tab", "Tab" }, { "escape", "Escape" }, { "off", "Disabled" }, { NULL, NULL } },
+      "space" },
     { NULL, NULL, NULL, { { NULL, NULL } }, NULL },
   };
 
@@ -227,6 +240,9 @@ namespace mouse
     { "picante8_mouse_deadzone", "Mouse Stick Deadzone; 20|25|30|10|15" },
     { "picante8_mouse_hold", "Mouse Hold Button; y|select" },
     { "picante8_mouse_cursor", "Mouse Cursor; off|on" },
+    { "picante8_mouse_function", "Mouse Function; free|centre" },
+    { "picante8_keyboard_dpad", "Keyboard D-Pad; arrows|wasd|esdf|ijkl|off" },
+    { "picante8_keyboard_key", "Keyboard X Button; space|enter|shift|tab|escape|off" },
     { NULL, NULL },
   };
 
@@ -252,6 +268,7 @@ namespace mouse
     options.hold = hold == "select" ? RETRO_DEVICE_ID_JOYPAD_SELECT : RETRO_DEVICE_ID_JOYPAD_Y;
 
     options.cursor = std::string(value("picante8_mouse_cursor")) == "on";
+    options.centre = std::string(value("picante8_mouse_function")) == "centre";
   }
 
   void reset()
@@ -285,6 +302,21 @@ namespace mouse
     return true;
   }
 
+  /* the stick's direction scaled by how far it is pushed past the deadzone, for Return to Centre */
+  static bool aim(unsigned index, float& ax, float& ay)
+  {
+    const float x = env.inputState(0, RETRO_DEVICE_ANALOG, index, RETRO_DEVICE_ID_ANALOG_X) / 32768.0f;
+    const float y = env.inputState(0, RETRO_DEVICE_ANALOG, index, RETRO_DEVICE_ID_ANALOG_Y) / 32768.0f;
+    const float length = std::sqrt(x * x + y * y);
+    if (length <= options.deadzone)
+      return false;
+
+    const float push = std::min(1.0f, (length - options.deadzone) / (1.0f - options.deadzone));
+    ax = x / length * push;
+    ay = y / length * push;
+    return true;
+  }
+
   static void announce()
   {
     if (cursor.announced)
@@ -295,7 +327,7 @@ namespace mouse
     static char text[160];
     switch (options.source)
     {
-    case Source::RIGHT: snprintf(text, sizeof(text), "Mouse: Right Stick moves, L1 clicks, R1 right clicks"); break;
+    case Source::RIGHT: snprintf(text, sizeof(text), "Mouse: Right Stick moves, L1 clicks, R1 right clicks, L2 middle clicks"); break;
     case Source::LEFT: snprintf(text, sizeof(text), "Mouse: Left Stick moves, L1 clicks, R1 right clicks"); break;
     case Source::DPAD: snprintf(text, sizeof(text), "Mouse: hold %s and use the D-Pad, L1 clicks, R1 right clicks", hold); break;
     default: snprintf(text, sizeof(text), "Mouse: a stick or %s with the D-Pad moves, L1 clicks, R1 right clicks", hold); break;
@@ -320,11 +352,24 @@ namespace mouse
     const auto pad = [](unsigned id) { return env.inputState(0, RETRO_DEVICE_JOYPAD, 0, id) != 0; };
 
     float vx = 0.0f, vy = 0.0f;
+    float ax = 0.0f, ay = 0.0f;
+    bool aimed = false;
     const bool sticks = options.source == Source::AUTO || options.source == Source::RIGHT || options.source == Source::LEFT;
-    if (options.source == Source::RIGHT || options.source == Source::AUTO)
-      stick(RETRO_DEVICE_INDEX_ANALOG_RIGHT, vx, vy);
-    if ((options.source == Source::LEFT || options.source == Source::AUTO) && vx == 0.0f && vy == 0.0f)
-      stick(RETRO_DEVICE_INDEX_ANALOG_LEFT, vx, vy);
+    const bool right = options.source == Source::RIGHT || options.source == Source::AUTO;
+    const bool left = options.source == Source::LEFT || options.source == Source::AUTO;
+    if (options.centre)
+    {
+      aimed = right && aim(RETRO_DEVICE_INDEX_ANALOG_RIGHT, ax, ay);
+      if (!aimed && left)
+        aimed = aim(RETRO_DEVICE_INDEX_ANALOG_LEFT, ax, ay);
+    }
+    else
+    {
+      if (right)
+        stick(RETRO_DEVICE_INDEX_ANALOG_RIGHT, vx, vy);
+      if (left && vx == 0.0f && vy == 0.0f)
+        stick(RETRO_DEVICE_INDEX_ANALOG_LEFT, vx, vy);
+    }
 
     uint8_t buttons = 0;
     cursor.holding = (options.source == Source::AUTO || options.source == Source::DPAD) && pad(options.hold);
@@ -356,7 +401,7 @@ namespace mouse
     {
       if (pad(RETRO_DEVICE_ID_JOYPAD_L)) buttons |= 1;
       if (pad(RETRO_DEVICE_ID_JOYPAD_R)) buttons |= 2;
-      if (pad(RETRO_DEVICE_ID_JOYPAD_L2) || pad(RETRO_DEVICE_ID_JOYPAD_R2)) buttons |= 4;
+      if (pad(RETRO_DEVICE_ID_JOYPAD_L2)) buttons |= 4;
     }
 
     /* a real mouse moves in its own pixels, halved so a desktop mouse does not race across 128 */
@@ -376,6 +421,19 @@ namespace mouse
       vx += px - cursor.x;
       vy += py - cursor.y;
       buttons |= 1;
+    }
+
+    if (options.centre && aimed)
+    {
+      vx = 63.5f + ax * 63.5f - cursor.x;
+      vy = 63.5f + ay * 63.5f - cursor.y;
+    }
+    else if (options.centre && vx == 0.0f && vy == 0.0f && !(buttons & 1))
+    {
+      /* nothing is moving it, so it eases back to the middle */
+      vx = (63.5f - cursor.x) * 0.25f;
+      vy = (63.5f - cursor.y) * 0.25f;
+      if (std::fabs(vx) < 0.05f && std::fabs(vy) < 0.05f) vx = 63.5f - cursor.x, vy = 63.5f - cursor.y;
     }
 
     cursor.x = std::min(127.0f, std::max(0.0f, cursor.x + vx));
@@ -421,6 +479,105 @@ namespace mouse
   }
 }
 
+/* Carts in devkit mode read the keyboard with stat(28) for keys held and stat(30) and stat(31) for typed characters. The
+   D-Pad, O, X and the spare X button stand in for keys, and a real keyboard from the frontend works as well. */
+namespace keyboard
+{
+  struct Key { uint8_t code; char typed; };
+
+  static const Key directions[][4] = {
+    { { 82, 0 }, { 81, 0 }, { 80, 0 }, { 79, 0 } },          /* arrows: up, down, left, right */
+    { { 26, 'w' }, { 22, 's' }, { 4, 'a' }, { 7, 'd' } },
+    { { 8, 'e' }, { 7, 'd' }, { 22, 's' }, { 9, 'f' } },
+    { { 12, 'i' }, { 14, 'k' }, { 13, 'j' }, { 15, 'l' } },
+  };
+
+  int dpad = 0;
+  Key extra = { 44, ' ' };
+  std::array<bool, 256> previous = {};
+
+  void readOptions()
+  {
+    const std::string set = mouse::value("picante8_keyboard_dpad");
+    dpad = set == "off" ? -1 : set == "wasd" ? 1 : set == "esdf" ? 2 : set == "ijkl" ? 3 : 0;
+
+    const std::string key = mouse::value("picante8_keyboard_key");
+    extra = key == "enter" ? Key{ 40, '\r' } : key == "shift" ? Key{ 225, 0 } : key == "tab" ? Key{ 43, '\t' }
+          : key == "escape" ? Key{ 41, 0 } : key == "off" ? Key{ 0, 0 } : Key{ 44, ' ' };
+  }
+
+  /* a real keyboard, from the libretro key to the SDL scancode PICO-8 uses and the character it types */
+  static void real(std::array<bool, 256>& held)
+  {
+    const auto down = [](unsigned key) { return env.inputState(0, RETRO_DEVICE_KEYBOARD, 0, key) != 0; };
+    for (unsigned i = 0; i < 26; ++i)
+      if (down(RETROK_a + i)) held[4 + i] = true;
+    for (unsigned i = 1; i <= 9; ++i)
+      if (down(RETROK_0 + i)) held[29 + i] = true;
+    const unsigned keys[][2] = {
+      { RETROK_0, 39 }, { RETROK_RETURN, 40 }, { RETROK_ESCAPE, 41 }, { RETROK_BACKSPACE, 42 }, { RETROK_TAB, 43 },
+      { RETROK_SPACE, 44 }, { RETROK_RIGHT, 79 }, { RETROK_LEFT, 80 }, { RETROK_DOWN, 81 }, { RETROK_UP, 82 },
+      { RETROK_LCTRL, 224 }, { RETROK_LSHIFT, 225 }, { RETROK_LALT, 226 }, { RETROK_RCTRL, 228 }, { RETROK_RSHIFT, 229 },
+      { RETROK_RALT, 230 },
+    };
+    for (const auto& key : keys)
+      if (down(key[0])) held[key[1]] = true;
+  }
+
+  static char typed(int code)
+  {
+    if (code >= 4 && code <= 29) return char('a' + code - 4);
+    if (code >= 30 && code <= 38) return char('1' + code - 30);
+    switch (code)
+    {
+    case 39: return '0';
+    case 40: return '\r';
+    case 42: return '\b';
+    case 43: return '\t';
+    case 44: return ' ';
+    default: return 0;
+    }
+  }
+
+  /* runs every 60 Hz frame after the mouse, so the D-Pad only types while it is not moving the cursor */
+  void update()
+  {
+    if (!machine)
+      return;
+
+    auto& state = machine->state().keyboard;
+    if (!(machine->memory().base()[0x5f2d] & 1))
+    {
+      state.held.fill(false);
+      state.typed.clear();
+      previous.fill(false);
+      return;
+    }
+
+    std::array<bool, 256> held = {};
+    const auto pad = [](unsigned id) { return env.inputState(0, RETRO_DEVICE_JOYPAD, 0, id) != 0; };
+    if (!mouse::holding())
+    {
+      static const unsigned ids[] = {
+        RETRO_DEVICE_ID_JOYPAD_UP, RETRO_DEVICE_ID_JOYPAD_DOWN, RETRO_DEVICE_ID_JOYPAD_LEFT, RETRO_DEVICE_ID_JOYPAD_RIGHT
+      };
+      for (int i = 0; dpad >= 0 && i < 4; ++i)
+        if (pad(ids[i])) held[directions[dpad][i].code] = true;
+      if (pad(RETRO_DEVICE_ID_JOYPAD_A)) held[29] = true;
+      if (pad(RETRO_DEVICE_ID_JOYPAD_B)) held[27] = true;
+    }
+    if (extra.code && pad(RETRO_DEVICE_ID_JOYPAD_X)) held[extra.code] = true;
+    real(held);
+
+    for (int code = 0; code < 256; ++code)
+      if (held[code] && !previous[code] && typed(code) && state.typed.size() < 32)
+        state.typed += typed(code);
+
+    previous = held;
+    state.held = held;
+  }
+}
+
 //TODO
 uint32_t Platform::getTicks() { return 0; }
 
@@ -461,7 +618,7 @@ static struct retro_input_descriptor input_desc[] = {
     { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_L,     "Mouse Left Click" },
     { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_R,     "Mouse Right Click" },
     { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_L2,    "Mouse Middle Click" },
-    { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_R2,    "Mouse Middle Click" },
+    { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_X,     "Keyboard Key" },
     { 0, RETRO_DEVICE_ANALOG, RETRO_DEVICE_INDEX_ANALOG_RIGHT, RETRO_DEVICE_ID_ANALOG_X, "Mouse X" },
     { 0, RETRO_DEVICE_ANALOG, RETRO_DEVICE_INDEX_ANALOG_RIGHT, RETRO_DEVICE_ID_ANALOG_Y, "Mouse Y" },
 
@@ -592,6 +749,7 @@ extern "C"
     input.setMachine(machine);
     mouse::reset();
     mouse::readOptions();
+    keyboard::readOptions();
 
     const char* saveDirectory = nullptr;
     lua::cartdataDirectory.clear();
@@ -716,8 +874,12 @@ extern "C"
 
     bool updated = false;
     if (env.retro_cb(RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE, &updated) && updated)
+    {
       mouse::readOptions();
+      keyboard::readOptions();
+    }
     mouse::update();
+    keyboard::update();
 
     const static int16_t mapping[retro8::BUTTON_COUNT] = {
       RETRO_DEVICE_ID_JOYPAD_LEFT,
